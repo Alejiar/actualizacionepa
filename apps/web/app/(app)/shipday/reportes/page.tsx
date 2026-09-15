@@ -89,7 +89,7 @@ export default function ReportesPage() {
       </div>
 
       {/* Reporte mensual estilo Excel */}
-      {report && <MonthlyReportPanel report={report} />}
+      {report && <MonthlyReportPanel report={report} monthClosed={closes.some(c => c.month === reportMonth)} />}
 
       {loading ? (
         <div className="text-center py-20 text-muted-foreground">Cargando...</div>
@@ -165,8 +165,13 @@ function CloseMetric({ label, value, highlight, warn }: { label: string; value: 
   );
 }
 
-function MonthlyReportPanel({ report }: { report: MonthlyReport }) {
+function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; monthClosed?: boolean }) {
   const fmt = (n: number) => formatCOP(n);
+  // Comisiones y deuda de clientes son saldos VIVOS (no tienen "mes"): la deuda de cada
+  // domiciliario/cliente es una sola posición neta actual, y el sistema no reconstruye deuda
+  // histórica por mes. En un mes ya CERRADO eso confunde (parece que el mes quedó "sucio"), así
+  // que se etiqueta como saldo actual. "Diferencia Bases" sí es del mes (ver close.service), no se etiqueta.
+  const liveNote = monthClosed ? "Saldo actual (no del mes ya cerrado)" : undefined;
   return (
     <div className="glass-strong rounded-3xl p-5 space-y-4">
       <h2 className="font-black text-lg">📊 Reporte del mes — {report.month}</h2>
@@ -194,6 +199,7 @@ function MonthlyReportPanel({ report }: { report: MonthlyReport }) {
           label="Comisiones pendientes"
           ok={report.commission.ok}
           value={report.commission.pending}
+          subnote={liveNote}
           detail={!report.commission.ok ? "Domiciliarios que aún deben comisión de sus domicilios" : undefined}
           items={report.commission.pendingDrivers.map(d => ({ id: d.id, label: d.name, amount: d.pendingDebt }))}
           linkHref="/shipday/deudas"
@@ -214,6 +220,7 @@ function MonthlyReportPanel({ report }: { report: MonthlyReport }) {
           label="Saldo Deudas Clientes"
           ok={report.clientDebt.ok}
           value={report.clientDebt.balance}
+          subnote={liveNote}
           detail={!report.clientDebt.ok ? `Saldo vivo que aún deben — normal ${fmt(report.clientDebt.normal)} + por hora ${fmt(report.clientDebt.hourly)}` : undefined}
           items={report.clientDebt.pendingClients.map(c => ({ id: c.id, label: c.name, amount: c.pendingDebt }))}
           linkHref="/clientes"
@@ -249,10 +256,10 @@ function RepCard({ label, value, sub, accent }: { label: string; value: string; 
   );
 }
 
-function BalanceRow({ label, ok, value, detail, items, linkHref, linkLabel, itemHint }: {
+function BalanceRow({ label, ok, value, detail, items, linkHref, linkLabel, itemHint, subnote }: {
   label: string; ok: boolean; value: number; detail?: string;
   items?: { id: string; label: string; amount: number }[];
-  linkHref?: string; linkLabel?: string; itemHint?: string;
+  linkHref?: string; linkLabel?: string; itemHint?: string; subnote?: string;
 }) {
   return (
     <div className={`rounded-2xl p-3 ${ok ? "bg-green-500/10 border border-green-500/20" : "bg-red-500/10 border border-red-500/20"}`}>
@@ -269,6 +276,8 @@ function BalanceRow({ label, ok, value, detail, items, linkHref, linkLabel, item
           </span>
         </div>
       </div>
+      {/* Aclaración para meses cerrados: este saldo es el ACTUAL (vivo), no el del mes cerrado. */}
+      {subnote && <p className="text-[11px] text-muted-foreground italic mt-1">ⓘ {subnote}</p>}
       {!ok && detail && <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1.5">{detail}</p>}
       {/* Lista de dónde está el dinero faltante — cada item enlaza a su origen */}
       {!ok && items && items.length > 0 && (

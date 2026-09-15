@@ -57,36 +57,55 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     prisma.hourlyClient.findMany({ where: { pendingDebt: { gt: 0 } }, select: { id: true, name: true, pendingDebt: true }, orderBy: { pendingDebt: "desc" }, take: 20 }),
   ]);
 
-  // Calcular saldo de base pendiente por domiciliario (solo bases, sin comisiones)
+  // ── BASES: dos alcances con el MISMO criterio (reconcileBasePending contra la deuda neta viva) ──
+  // El saldo de base (entrega − pago) es un registro paralelo que puede quedar POR ENCIMA de la
+  // deuda neta real (los pagos se reparten entre base y comisión y la deuda tiene piso en 0), así
+  // que un domiciliario ya saldado puede conservar un residuo de libro. La verdad única es la
+  // posición neta (pendingDebt): quien no debe nada NO debe base → min(saldoBase, deudaNeta).
+  //
+  // (1) Libro COMPLETO (todos los tiempos). Sirve para: (a) separar "base" de "comisión" dentro de
+  //     la deuda neta viva (abajo), y (b) el proyector de cierre, donde "plata física fuera" es
+  //     TODA la base sin devolver, no solo la del mes (`diffAllTime`).
   const baseBalanceByDriver = new Map<string, number>();
   for (const row of driversWithBase) {
     const cur = baseBalanceByDriver.get(row.driverId) ?? 0;
     const amt = row._sum.amount ?? 0;
     baseBalanceByDriver.set(row.driverId, cur + (row.type === "entrega" ? amt : -amt));
   }
-  const driverIdsWithBase = [...baseBalanceByDriver.entries()].filter(([, bal]) => bal > 0).map(([id]) => id);
-  // RECONCILIAR el libro de base contra la posición NETA autoritativa del domiciliario.
-  // El saldo de base (entrega − pago) es un registro paralelo que puede quedar POR ENCIMA
-  // de la deuda neta real: los pagos se reparten entre base y comisión y la deuda tiene
-  // piso en 0, así que un domiciliario ya saldado puede conservar un residuo de base en el
-  // libro (deriva, no base real). La verdad única es la posición neta (pendingDebt): quien
-  // no debe nada NO debe base. Mostramos min(saldoBase, deudaNeta) para que Bases y
-  // Reportes cuadren con Deudas/Domiciliarios (mismo criterio que ya usa la comisión abajo).
-  const baseDriverRows = driverIdsWithBase.length
-    ? await prisma.driver.findMany({ where: { id: { in: driverIdsWithBase } }, select: { id: true, name: true, pendingDebt: true } })
-    : [];
-  const reconciledBaseByDriver = new Map<string, number>();
-  for (const d of baseDriverRows) {
-    reconciledBaseByDriver.set(d.id, reconcileBasePending(baseBalanceByDriver.get(d.id) ?? 0, d.pendingDebt));
+  // (2) Libro DEL MES seleccionado. Es lo que muestran el indicador "Diferencia Bases", la tarjeta
+  //     del cierre y el Excel. Antes el panel usaba el libro COMPLETO, y por eso un mes ya cerrado y
+  //     limpio mostraba base pendiente de OTROS meses (incoherente con la tarjeta, que sí es del mes
+  //     vía getMonthBasePendingReconciled). Ahora panel/tarjeta/Excel usan el MISMO criterio.
+  const monthBaseGrp = await prisma.baseTransaction.groupBy({
+    by: ["driverId", "type"], _sum: { amount: true }, where: baseWhere,
+  });
+  const monthBaseByDriver = new Map<string, number>();
+  for (const row of monthBaseGrp) {
+    const cur = monthBaseByDriver.get(row.driverId) ?? 0;
+    const amt = row._sum.amount ?? 0;
+    monthBaseByDriver.set(row.driverId, cur + (row.type === "entrega" ? amt : -amt));
   }
-  const pendingBaseDrivers = baseDriverRows
-    .map(d => ({ id: d.id, name: d.name, pendingDebt: reconciledBaseByDriver.get(d.id) ?? 0 }))
+  // Deuda neta viva de todo domiciliario con base > 0 (histórica o del mes), para reconciliar ambos.
+  const baseDriverIds = [...new Set([
+    ...[...baseBalanceByDriver.entries()].filter(([, b]) => b > 0).map(([id]) => id),
+    ...[...monthBaseByDriver.entries()].filter(([, b]) => b > 0).map(([id]) => id),
+  ])];
+  const baseDriverRows = baseDriverIds.length
+    ? await prisma.driver.findMany({ where: { id: { in: baseDriverIds } }, select: { id: true, name: true, pendingDebt: true } })
+    : [];
+  const netDebtById = new Map(baseDriverRows.map(d => [d.id, d.pendingDebt] as const));
+  const nameById = new Map(baseDriverRows.map(d => [d.id, d.name] as const));
+  // All-time (para el proyector de cierre). Ledger ≤ 0 reconcilia a 0, así que sumar todos es seguro.
+  const basePendingAllTime = [...baseBalanceByDriver.entries()]
+    .reduce((s, [id, ledger]) => s + reconcileBasePending(ledger, netDebtById.get(id) ?? 0), 0);
+  // Del mes (indicador "Diferencia Bases" + lista de quién debe + Excel).
+  const pendingBaseDrivers = [...monthBaseByDriver.entries()]
+    .map(([id, ledger]) => ({ id, name: nameById.get(id) ?? "?", pendingDebt: reconcileBasePending(ledger, netDebtById.get(id) ?? 0) }))
     .filter(d => d.pendingDebt > 0)
     .sort((a, b) => b.pendingDebt - a.pendingDebt)
     .slice(0, 20);
-  // Total de base realmente sin devolver (conciliado con la deuda neta), NO el residuo del
-  // libro. Es el número que deben mostrar el indicador "Diferencia Bases" y el Excel.
-  const basePendingReconciled = [...reconciledBaseByDriver.values()].reduce((s, v) => s + v, 0);
+  const basePendingReconciled = [...monthBaseByDriver.entries()]
+    .reduce((s, [id, ledger]) => s + reconcileBasePending(ledger, netDebtById.get(id) ?? 0), 0);
 
   // COMISIONES: deuda del domiciliario que NO es base (la comisión que deben por domicilios)
   const driversWithDebt = await prisma.driver.findMany({
@@ -149,7 +168,10 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     totalSales,
     expenses: { cash: gastosEf, bank: gastosBk, total: totalExpenses },
     payroll: { cash: nominaEf, bank: nominaBk, total: totalPayroll },
-    bases: { given: basesGiven, returned: basesPaid, diff: basesDiff, ok: basesDiff === 0, pendingDrivers: pendingBaseDrivers },
+    // diff = base sin devolver DEL MES (indicador/tarjeta/Excel, coherente entre sí).
+    // diffAllTime = base sin devolver de TODOS los tiempos (solo la usa el proyector de cierre para
+    // la plata física realmente fuera). Ver getMonthCloseProjection.
+    bases: { given: basesGiven, returned: basesPaid, diff: basesDiff, diffAllTime: basePendingAllTime, ok: basesDiff === 0, pendingDrivers: pendingBaseDrivers },
     commission: { pending: commissionPending, ok: commissionPending === 0, pendingDrivers: pendingCommissionDrivers },
     transfers: { ingresos: bankIng, egresos: bankEgr, diff: transferDiff, ok: pendingTransferMovs.length === 0, pendingItems: transferPendingItems },
     clientDebt: { generated: debtsGen, paid: debtsPaid, balance: clientDebtBalance, normal: clientDebtNormal, hourly: clientDebtHourly, ok: clientDebtBalance === 0, pendingClients },
@@ -177,7 +199,10 @@ export async function getMonthCloseProjection(
   const targetCapital = tCash + tBank;
 
   // Diferencias pendientes que deben cuadrar (esperado 0 cada una).
-  const basesDiff = report.bases.diff;
+  // Base: aquí SÍ se usa el saldo de TODOS los tiempos (diffAllTime), no el del mes: para el capital
+  // físico a dejar, TODA la base sin devolver es plata que no está en caja (igual que comisiones y
+  // deudas de clientes, que también son saldos vivos totales). El indicador del panel usa diff (mes).
+  const basesDiff = report.bases.diffAllTime;
   const transferDiff = report.transfers.diff;
   const commissionPending = report.commission.pending;
   const pendingDiffs = basesDiff + transferDiff + commissionPending;

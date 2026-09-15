@@ -162,9 +162,19 @@ export const createClose = (month: string, branchId?: string, initialCash?: numb
   apiFetch<MonthlyClose>("/sd/closes", { method: "POST", body: JSON.stringify({ month, branchId, initialCash, initialBank }) });
 export const exportExcel = async (month: string, branchId?: string) => {
   const token = getToken();
+  const deviceId = getDeviceId();
   const q = branchId ? `?branchId=${branchId}` : "";
+  // Este endpoint es binario (xlsx), por eso NO pasa por apiFetch y arma el fetch a mano. Pero
+  // debe mandar los MISMOS headers de identidad que apiFetch: el token Y el X-Device-Id que exige
+  // la puerta de Equipos (requireAuthorizedDevice). Sin el device id, un acceso remoto (no
+  // loopback, p. ej. por Tailscale) recibía 403 y el Excel "no se dejaba descargar", aunque el
+  // reporte en pantalla sí cargaba (ese sí va por apiFetch, con el header). Loopback lo dejaba
+  // pasar igual, por eso solo fallaba en remoto.
   const res = await fetch(`/api/sd/closes/export/${month}${q}`, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(deviceId ? { "X-Device-Id": deviceId } : {}),
+    },
   });
   if (!res.ok) throw new Error("Error al generar Excel");
   const blob = await res.blob();

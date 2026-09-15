@@ -4,6 +4,7 @@ import { WizardShell } from "./WizardShell";
 import { MoneyInput } from "../MoneyInput";
 import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
+import { todayBogota } from "@/lib/format";
 
 interface Props {
   open: boolean;
@@ -31,7 +32,12 @@ function labelMonth(ym: string): string {
 
 export function MonthlyCloseWizard({ open, onOpenChange, branches, onDone }: Props) {
   const [step, setStep] = useState(1);
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  // Mes por defecto en zona Bogotá (NO UTC). Con new Date().toISOString() el mes se tomaba en
+  // UTC: la noche del último día del mes (después de las 7pm Bogotá) el UTC ya marcaba el mes
+  // SIGUIENTE, así que al cerrar "agosto" el 31 en la noche el wizard defaulteaba a septiembre y
+  // el cierre quedaba guardado con el mes equivocado (y sin sale en Reportes). Mismo criterio que
+  // reportes/page.tsx y la regla de zona horaria de CLAUDE.md.
+  const [month, setMonth] = useState(() => todayBogota().slice(0, 7));
   const [branchId, setBranchId] = useState("");
   const [targetTotal, setTargetTotal] = useState(0); // capital total objetivo
   const [leaveCash, setLeaveCash] = useState(0);      // cuánto dejar en efectivo
@@ -60,7 +66,7 @@ export function MonthlyCloseWizard({ open, onOpenChange, branches, onDone }: Pro
   }
 
   function resetForm() {
-    setStep(1); setMonth(new Date().toISOString().slice(0, 7));
+    setStep(1); setMonth(todayBogota().slice(0, 7)); // Bogotá, no UTC (ver arriba)
     setBranchId(""); setTargetTotal(0); setLeaveCash(0); setLeaveBank(0);
     setConfirmed(false); setProjection(null);
   }
