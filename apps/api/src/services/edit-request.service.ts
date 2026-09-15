@@ -154,13 +154,13 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
         // los registros contables subsidiarios (BaseTransaction + DriverPayment
         // bank-linked) que se crearon junto a este bankTransaction.
         //
-        // La condición es debtApplied > 0, NO (noCounterpart && type=="ingreso"): ver
-        // nota en bank-transaction.service.ts::remove() y en schema.prisma.
-        if (bankTx.driverId && bankTx.debtApplied > 0) {
-          // Revertir por POSICIÓN NETA (deuda − crédito): el ingreso redujo esa posición
-          // en `amount`; al borrarlo se restaura y se re-normaliza en pendingDebt o
-          // creditAmount. Antes solo se sumaba a pendingDebt y el crédito por sobrepago
-          // quedaba como saldo fantasma ("la empresa le debe" que no desaparecía).
+        // La condición es debtApplied != 0 (marca explícita), NO (noCounterpart && type=="ingreso").
+        // Debe quedar SINCRONIZADO con bank-transaction.service.ts::remove(). Ver esa nota y schema.prisma.
+        //   debtApplied > 0 → ingreso que descontó deuda.  debtApplied < 0 → egreso que pagó crédito (payCredit).
+        if (bankTx.driverId && bankTx.debtApplied !== 0) {
+          // Revertir por POSICIÓN NETA (deuda − crédito): `net + debtApplied` restaura pendingDebt o
+          // creditAmount para AMBOS signos, sin dejar saldo fantasma ("la empresa le debe" que no
+          // desaparecía, o deuda que no volvía).
           const drv = await tx.driver.findUnique({ where: { id: bankTx.driverId } });
           if (drv) {
             const net = (drv.pendingDebt - (drv.creditAmount ?? 0)) + bankTx.debtApplied;
@@ -173,25 +173,27 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
               },
             });
           }
-          // Búsqueda por ID (bankTransactionId); respaldo por ventana de fecha ±5s
-          // solo para registros viejos sin el enlace directo. Ver comentario en
-          // bank-transaction.service.ts::remove().
-          const window = { gte: new Date(bankTx.date.getTime() - 5000), lte: new Date(bankTx.date.getTime() + 5000) };
-          await tx.baseTransaction.deleteMany({
-            where: {
-              driverId: bankTx.driverId,
-              type: "pago",
-              notes: { startsWith: BANK_LINKED_BASE_PREFIX },
-              OR: [{ bankTransactionId: bankTx.id }, { bankTransactionId: null, date: window }],
-            },
-          });
-          await tx.driverPayment.deleteMany({
-            where: {
-              driverId: bankTx.driverId,
-              notes: { startsWith: BANK_LINKED_PAYMENT_NOTE },
-              OR: [{ bankTransactionId: bankTx.id }, { bankTransactionId: null, date: window }],
-            },
-          });
+          // Registros contables subsidiarios SOLO existen para pagos-INGRESO (debtApplied > 0);
+          // payCredit (debtApplied < 0) no crea ninguno. Búsqueda por ID; respaldo por ventana ±5s
+          // solo para registros viejos sin enlace directo. Ver bank-transaction.service.ts::remove().
+          if (bankTx.debtApplied > 0) {
+            const window = { gte: new Date(bankTx.date.getTime() - 5000), lte: new Date(bankTx.date.getTime() + 5000) };
+            await tx.baseTransaction.deleteMany({
+              where: {
+                driverId: bankTx.driverId,
+                type: "pago",
+                notes: { startsWith: BANK_LINKED_BASE_PREFIX },
+                OR: [{ bankTransactionId: bankTx.id }, { bankTransactionId: null, date: window }],
+              },
+            });
+            await tx.driverPayment.deleteMany({
+              where: {
+                driverId: bankTx.driverId,
+                notes: { startsWith: BANK_LINKED_PAYMENT_NOTE },
+                OR: [{ bankTransactionId: bankTx.id }, { bankTransactionId: null, date: window }],
+              },
+            });
+          }
         }
         await tx.bankTransaction.delete({ where: { id: entityId } });
       });

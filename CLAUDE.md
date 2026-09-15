@@ -99,12 +99,21 @@ interna, marcados con notas especiales (`BANK_LINKED_PAYMENT_NOTE`,
   borrar los registros vinculados por `bankTransactionId`. **Ambos lugares
   deben mantenerse sincronizados** — si agregas una tercera forma de borrar un
   `BankTransaction`, replica esta misma lógica.
-- La condición para revertir es **`debtApplied > 0`**, NUNCA
+- La condición para revertir es **`debtApplied != 0`** (marca explícita), NUNCA
   `noCounterpart && type === "ingreso"`. Esa heurística vieja causó un bug
   real (17-jul-2026): se aplicó por error una **salida** de $100.000 a la
   deuda de una domiciliaria; al borrar el movimiento la guarda no se cumplió
   (era `egreso`), la deuda nunca se restableció y quedó un `DriverPayment`
-  fantasma de $18.600 manteniéndola en cero.
+  fantasma de $18.600 manteniéndola en cero. El signo de `debtApplied` importa:
+  - **`> 0`** = ingreso que descontó deuda (`applyBankToDriver`/`registerPayment`).
+    Al revertir, además borra los registros contables vinculados (base pago +
+    `DriverPayment` bank-linked) por `bankTransactionId`.
+  - **`< 0`** = egreso que **pagó crédito** (`payCredit`, guarda `-creditAmount`).
+    NO tiene registros contables vinculados que borrar. Antes NO se marcaba, así
+    que borrar el pago del crédito no devolvía el saldo a favor (quedaba en cero) y
+    luego revertir el ingreso original dejaba una **deuda fantasma** (bug real Juan
+    Sanabria, 15-sep-2026). **No simplifiques la guarda a `> 0`** o lo reintroduces.
+    La fórmula `net = (pendingDebt − creditAmount) + debtApplied` ya cuadra ambos signos.
 - `applyBankToDriver` **solo acepta ingresos sin contraparte** (`pairId` nulo).
   Una salida es plata que sale (descontarla de una deuda es contabilidad al
   revés) y un movimiento con contraparte es plata de paso, no un pago del

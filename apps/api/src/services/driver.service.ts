@@ -427,7 +427,14 @@ export async function payCredit(
   if (creditAmount <= 0) throw badRequest("Este domiciliario no tiene crédito pendiente");
 
   await prisma.$transaction(async (tx) => {
-    // Egreso de la empresa hacia el domiciliario
+    // Egreso de la empresa hacia el domiciliario.
+    // debtApplied = -creditAmount: MARCA de reversión. Este egreso SUBE la posición neta del
+    // domiciliario en `creditAmount` (paga el crédito: creditAmount → 0). Al eliminarlo, remove()
+    // / edit-request revierten con `net + debtApplied`, restaurando el crédito. Sin esta marca,
+    // borrar el pago del crédito NO devolvía la deuda a favor del domiciliario (bug real: al
+    // eliminar el egreso de pago-crédito el crédito quedaba en cero y luego el ingreso original
+    // revertía sobre cero → deuda fantasma). Es NEGATIVO a propósito (egreso que pagó crédito),
+    // opuesto al ingreso que descuenta deuda (debtApplied > 0).
     await tx.bankTransaction.create({
       data: {
         type: "egreso",
@@ -436,6 +443,7 @@ export async function payCredit(
         description: `Pago a domiciliario ${driver.name}`,
         driverId,
         driverName: driver.name,
+        debtApplied: -creditAmount,
         createdBy: actor?.id ?? null,
         createdByName: actor?.name ?? null,
         deviceId: actor?.deviceId ?? null,

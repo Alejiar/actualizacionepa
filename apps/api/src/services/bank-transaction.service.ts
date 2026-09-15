@@ -140,13 +140,15 @@ export async function remove(id: string) {
       // deuda y limpiar los registros contables subsidiarios que se crearon junto a
       // él — igual que hace edit-request.service.ts al aprobar una eliminación.
       //
-      // La condición es debtApplied > 0, NO (noCounterpart && type=="ingreso"): esa
-      // heurística dejó pasar un egreso aplicado por error a una deuda, y al borrarlo
-      // la deuda nunca se restableció. Ver nota en schema.prisma.
-      if (row.driverId && row.debtApplied > 0) {
-        // Revertir por POSICIÓN NETA (deuda − crédito): ver nota en
-        // edit-request.service.ts. Restaura pendingDebt o creditAmount según
-        // corresponda, sin dejar crédito por sobrepago fantasma.
+      // La condición es debtApplied != 0 (marca explícita), NO (noCounterpart && type=="ingreso"):
+      // esa heurística dejó pasar un egreso aplicado por error a una deuda, y al borrarlo la deuda
+      // nunca se restableció. Ver nota en schema.prisma.
+      //   debtApplied > 0 → ingreso que descontó deuda (applyBankToDriver/registerPayment).
+      //   debtApplied < 0 → egreso que pagó crédito (payCredit). Antes NO se marcaba, así que
+      //     borrar el pago-crédito no devolvía el crédito al domiciliario (bug real Juan Sanabria).
+      if (row.driverId && row.debtApplied !== 0) {
+        // Revertir por POSICIÓN NETA (deuda − crédito): `net + debtApplied` restaura pendingDebt o
+        // creditAmount según corresponda, para AMBOS signos, sin dejar crédito/deuda fantasma.
         const drv = await tx.driver.findUnique({ where: { id: row.driverId } });
         if (drv) {
           const net = (drv.pendingDebt - (drv.creditAmount ?? 0)) + row.debtApplied;
@@ -159,28 +161,29 @@ export async function remove(id: string) {
             },
           });
         }
-        // Búsqueda por ID (bankTransactionId), sin ambigüedad. Se mantiene un
-        // respaldo por ventana de fecha ±5s SOLO para registros viejos creados
-        // antes de que existiera el enlace directo (bankTransactionId=null) —
-        // antes ESTA era la única forma de buscarlos y fallaba si el
-        // BankTransaction tenía una fecha distinta a "ahora" (p. ej. backdateado),
-        // dejando "pagos" huérfanos que inflaban base pagada sin bajar la deuda.
-        const window = { gte: new Date(row.date.getTime() - 5000), lte: new Date(row.date.getTime() + 5000) };
-        await tx.baseTransaction.deleteMany({
-          where: {
-            driverId: row.driverId,
-            type: "pago",
-            notes: { startsWith: BANK_LINKED_BASE_PREFIX },
-            OR: [{ bankTransactionId: row.id }, { bankTransactionId: null, date: window }],
-          },
-        });
-        await tx.driverPayment.deleteMany({
-          where: {
-            driverId: row.driverId,
-            notes: { startsWith: BANK_LINKED_PAYMENT_NOTE },
-            OR: [{ bankTransactionId: row.id }, { bankTransactionId: null, date: window }],
-          },
-        });
+        // Registros contables subsidiarios (base pago + driverPayment bank-linked) SOLO existen
+        // para pagos-INGRESO (debtApplied > 0). payCredit (debtApplied < 0) no crea ninguno, así
+        // que solo se limpian cuando debtApplied > 0 (y así la ventana ±5s no toca nada ajeno).
+        // Búsqueda por ID (bankTransactionId), sin ambigüedad; respaldo por ventana de fecha ±5s
+        // SOLO para registros viejos sin el enlace directo (bankTransactionId=null).
+        if (row.debtApplied > 0) {
+          const window = { gte: new Date(row.date.getTime() - 5000), lte: new Date(row.date.getTime() + 5000) };
+          await tx.baseTransaction.deleteMany({
+            where: {
+              driverId: row.driverId,
+              type: "pago",
+              notes: { startsWith: BANK_LINKED_BASE_PREFIX },
+              OR: [{ bankTransactionId: row.id }, { bankTransactionId: null, date: window }],
+            },
+          });
+          await tx.driverPayment.deleteMany({
+            where: {
+              driverId: row.driverId,
+              notes: { startsWith: BANK_LINKED_PAYMENT_NOTE },
+              OR: [{ bankTransactionId: row.id }, { bankTransactionId: null, date: window }],
+            },
+          });
+        }
       }
     }
     if (original.groupId) {
