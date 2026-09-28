@@ -222,6 +222,28 @@ Incluye las correcciones anteriores verificadas y esta segunda ronda. Capturada 
  51 files changed, 1872 insertions(+), 547 deletions(-)
 ```
 
-### Estado de Git previsto tras el commit
+### Estado de Git verificado tras el commit
 
 Se versionan código, esquema, ambas migraciones de Codex, pruebas e informes propios. Se dejan intactos y fuera del commit los archivos ajenos: `AUDITORIA_CLAUDE_POST_CODEX.md`, `CONTEXTO_AUDITORIA.md`, `apps/api/scripts/simulate-3months.ts`, y la línea de ese script en `apps/api/package.json`. No se hace push. El hash y la comprobación final se conservan en `C:\LayaJarvis\epa-bloqueadores\git-final.txt`.
+
+### Comprobación final
+
+Commit de implementación: `719132b` (`fix: preserve financial consistency and resolve post-audit blockers`), 51 archivos, 1.935 inserciones y 547 eliminaciones; incluye la primera corrección que estaba pendiente de versionar. La compilación completa en el proyecto instalado terminó correctamente. API `/api/health` y pantalla `/login`: HTTP 200, conexión local y diario disponibles. Las bases temporales de esta ejecución se retiraron después de guardar evidencia.
+
+`git diff --stat` después del commit de implementación (solo cambio previo del usuario):
+
+```text
+ apps/api/package.json | 1 +
+ 1 file changed, 1 insertion(+)
+```
+
+`git status --short` verificado, sin correcciones de código pendientes de commit:
+
+```text
+ M apps/api/package.json
+?? AUDITORIA_CLAUDE_POST_CODEX.md
+?? CONTEXTO_AUDITORIA.md
+?? apps/api/scripts/simulate-3months.ts
+```
+
+Este anexo se guarda en un commit documental posterior. No se hizo push ni despliegue a producción.
