@@ -1,4 +1,5 @@
-import { prisma } from "../lib/prisma";
+import { refreshOrderStats } from "../lib/order-stats";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { encryptApiKey, decryptApiKey, DecryptError } from "../lib/crypto";
 import * as shipday from "./shipday.service";
 import { notFound, conflict } from "../lib/errors";
@@ -93,9 +94,12 @@ export async function updateBranch(id: string, input: Partial<BranchInput> & { a
 }
 
 export async function deleteBranch(id: string) {
+  return moneyTransaction(async () => {
   const exists = await prisma.branch.findUnique({ where: { id } });
   if (!exists) throw notFound("Sucursal no encontrada");
-  await prisma.branch.delete({ where: { id } });
+  // Conserva toda la historia y los vínculos bancarios; DELETE significa desactivar.
+  await prisma.branch.update({ where: { id }, data: { active: false } });
+  });
 }
 
 export async function testBranchConnection(id: string) {
@@ -135,9 +139,10 @@ export interface SyncOptions {
   forceDrivers?: boolean;
 }
 
-export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ drivers: number; orders: number }> {
+export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ drivers: number; orders: number; partial?: boolean; error?: string }> {
   const branch = await prisma.branch.findUnique({ where: { id } });
   if (!branch) throw notFound("Sucursal no encontrada");
+  if (!branch.active) throw conflict("La sucursal está desactivada. Su historial permanece disponible.");
 
   let apiKey: string;
   try {
@@ -156,6 +161,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
 
   let driversCount = 0;
   let ordersCount = 0;
+  let partialError: string | undefined;
 
   try {
     // 1. Sync drivers (solo si la caché expiró: ahorra 1 solicitud/ciclo del cupo).
@@ -219,6 +225,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
     const from = toBogotaDateStr(fromDate);
 
     const completed = await shipday.getCompletedOrders(apiKey, from, to);
+    partialError = completed.partialError;
     for (const co of completed) {
       const orderId = String(co.orderId);
       const deliveredAt = shipday.getCompletedDeliveredAt(co);
@@ -239,7 +246,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
 
     await prisma.branch.update({
       where: { id },
-      data: { syncStatus: "ok", syncMessage: null, lastSyncAt: new Date() },
+      data: { syncStatus: partialError ? "error" : "ok", syncMessage: partialError ?? null, lastSyncAt: new Date() },
     });
   } catch (err) {
     await prisma.branch.update({
@@ -249,7 +256,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
     throw err;
   }
 
-  return { drivers: driversCount, orders: ordersCount };
+  return { drivers: driversCount, orders: ordersCount, partial: !!partialError, error: partialError };
 }
 
 /**
@@ -264,6 +271,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
  * `shipdayIds` = ids de Shipday presentes en la última respuesta de /carriers.
  */
 async function reconcileDeletedDrivers(branchId: string, shipdayIds: Set<string>): Promise<void> {
+  return moneyTransaction(async () => {
   const locals = await prisma.driver.findMany({
     where: { branchId },
     select: { id: true, shipdayDriverId: true, active: true, pendingDebt: true, creditAmount: true },
@@ -297,6 +305,8 @@ async function reconcileDeletedDrivers(branchId: string, shipdayIds: Set<string>
       await prisma.driver.delete({ where: { id: d.id } });
     }
   }
+
+  });
 }
 
 interface DeliveredPayload {
@@ -311,11 +321,14 @@ interface DeliveredPayload {
 }
 
 async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p: DeliveredPayload): Promise<boolean> {
+  return moneyTransaction(async () => {
   // Lápida: un pedido que un admin eliminó (vía EditRequest) NO debe resucitar aunque
   // Shipday lo siga reportando entregado. Sin esta guarda, el borrado "no pega".
   const tombstoned = await prisma.deletedShipdayOrder.findUnique({ where: { shipdayOrderId } });
   if (tombstoned) return false;
 
+  const branch = await prisma.branch.findUnique({where:{id:branchId}});
+  if (!branch?.active) return false;
   const existing = await prisma.shipdayOrder.findUnique({ where: { shipdayOrderId } });
 
   const companyAmount = Math.round(p.deliveryValue * (p.commissionPercent / 100));
@@ -330,6 +343,7 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
   const dateStr = toBogotaDateStr(p.deliveredAt);
 
   if (existing) {
+    await prisma.shipdayOrder.update({where:{id:existing.id},data:{shipdayDeliveryValue:p.deliveryValue}});
     // AUTOSANACIÓN: el pedido ya está guardado, pero puede ser un stub del webhook con
     // valor 0 (ver SELF_HEAL_SINCE). Si el registro está en 0 y el polling ya trae la
     // tarifa real (>0), lo corregimos UNA sola vez: valor, comisión, número y datos del
@@ -337,12 +351,21 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
     // el stub en 0 nunca se contó (el webhook exige companyAmount>0 para sumar).
     // Solo pedidos creados a partir del despliegue de este arreglo: los viejos no se tocan.
     const isZeroStub =
-      existing.deliveryValue === 0 &&
+      !existing.manualOverride && existing.deliveryValue === 0 &&
       p.deliveryValue > 0 &&
       companyAmount > 0 &&
       existing.createdAt >= SELF_HEAL_SINCE &&
       !existing.shipdayOrderId.startsWith("manual-"); // los manuales no se sincronizan
-    if (!isZeroStub) return false;
+    const needsDriver = !existing.driverId && !!driverId && existing.companyAmount > 0;
+    if (!isZeroStub && !needsDriver) return false;
+    if (!isZeroStub) {
+      await prisma.$transaction(async tx => {
+        await tx.shipdayOrder.update({where:{id:existing.id},data:{driverId}});
+        await applyDebtDelta(tx, driverId!, existing.companyAmount);
+        await refreshOrderStats(tx, {...existing, driverId});
+      });
+      return true;
+    }
 
     const effectiveDriverId = driverId ?? existing.driverId;
     await prisma.$transaction(async (tx) => {
@@ -382,6 +405,7 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
         driverId,
         orderNumber: p.orderNumber,
         deliveryValue: p.deliveryValue,
+        shipdayDeliveryValue: p.deliveryValue,
         companyAmount,
         customerName: p.customerName,
         customerAddress: p.customerAddress,
@@ -403,6 +427,8 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
   });
 
   return true;
+
+  });
 }
 
 async function getCommissionPercent(): Promise<number> {
@@ -421,6 +447,7 @@ async function getCommissionPercent(): Promise<number> {
 export async function reconcileBranch(id: string, from: string, to: string): Promise<{ checked: number; created: number }> {
   const branch = await prisma.branch.findUnique({ where: { id } });
   if (!branch) throw notFound("Sucursal no encontrada");
+  if (!branch.active) throw conflict("La sucursal está desactivada. Su historial permanece disponible.");
 
   const apiKey = decryptApiKey(branch.apiKeyEnc);
   const commissionPercent = await getCachedCommission();
@@ -451,7 +478,7 @@ export async function syncAllBranches(opts: SyncOptions = {}) {
   for (const b of branches) {
     try {
       const r = await syncBranch(b.id, opts);
-      results.push({ branchId: b.id, name: b.name, ...r, ok: true });
+      results.push({ branchId: b.id, name: b.name, ...r, ok: !r.partial });
     } catch (err) {
       results.push({ branchId: b.id, name: b.name, ok: false, error: err instanceof Error ? err.message : String(err) });
     }
@@ -461,9 +488,8 @@ export async function syncAllBranches(opts: SyncOptions = {}) {
 
 /**
  * "Cargar pedidos desde hoy": fija el día de arranque al inicio de HOY (Bogotá),
- * BORRA los pedidos cargados antes de hoy, recalcula la deuda de cada domiciliario
- * (cuenta en cero) y sincroniza para traer todos los de hoy. Desde aquí el sistema
- * solo cuenta de hoy en adelante.
+ * limita las importaciones futuras y sincroniza los pedidos de hoy.
+ * Conserva el historial contable y los saldos existentes.
  */
 export async function startOrdersFromToday(branchId: string) {
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
@@ -471,33 +497,10 @@ export async function startOrdersFromToday(branchId: string) {
 
   const since = new Date(todayBogota() + "T00:00:00.000-05:00");
 
-  // 1) Borrar pedidos anteriores a hoy y sus estadísticas diarias.
-  await prisma.shipdayOrder.deleteMany({ where: { branchId, deliveredAt: { lt: since } } });
-  await prisma.dailyDriverStat.deleteMany({ where: { branchId, date: { lt: toBogotaDateStr(since) } } });
-
-  // 2) Fijar el día de arranque.
+  // Solo limita futuras importaciones; conserva pedidos, pagos y saldos existentes.
   await prisma.branch.update({ where: { id: branchId }, data: { ordersSince: since } });
 
-  // 3) Recalcular la deuda de cada domiciliario (cuenta en cero): comisión de los
-  //    pedidos que quedan + saldo de bases − pagos.
-  const drivers = await prisma.driver.findMany({ where: { branchId }, select: { id: true } });
-  for (const d of drivers) {
-    const [ordAgg, baseGiven, basePaid, payAgg] = await Promise.all([
-      prisma.shipdayOrder.aggregate({ where: { driverId: d.id }, _sum: { companyAmount: true } }),
-      prisma.baseTransaction.aggregate({ where: { driverId: d.id, type: "entrega" }, _sum: { amount: true } }),
-      prisma.baseTransaction.aggregate({ where: { driverId: d.id, type: "pago" }, _sum: { amount: true } }),
-      prisma.driverPayment.aggregate({ where: { driverId: d.id }, _sum: { amount: true } }),
-    ]);
-    const net = (ordAgg._sum.companyAmount ?? 0)
-      + (baseGiven._sum.amount ?? 0) - (basePaid._sum.amount ?? 0)
-      - (payAgg._sum.amount ?? 0);
-    await prisma.driver.update({
-      where: { id: d.id },
-      data: { pendingDebt: Math.max(0, net), creditAmount: Math.max(0, -net) },
-    });
-  }
-
-  // 4) Sincronizar para traer todos los pedidos de hoy.
+  // Sincronizar para traer todos los pedidos de hoy.
   const r = await syncBranch(branchId);
   return { ordersSince: since, ...r };
 }

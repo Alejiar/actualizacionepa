@@ -37,10 +37,10 @@ export default function SucursalesPage() {
 
   const handleStartOrders = async (id: string, name: string) => {
     if (!confirm(
-      `¿Empezar a cargar pedidos de "${name}" desde HOY?\n\n` +
+      `¿Importar pedidos desde hoy conservando el historial y los saldos existentes?\n\n` +
       "• Cargará TODOS los pedidos de hoy (desde la primera hora del día).\n" +
-      "• BORRARÁ los pedidos de días anteriores y dejará la deuda en cero.\n" +
-      "• De aquí en adelante el sistema cuenta solo desde hoy.\n\nEsta acción no se puede deshacer."
+      "• Conservará los pedidos anteriores, los pagos y las deudas existentes.\n" +
+      "• Las futuras importaciones se limitarán a entregas desde hoy."
     )) return;
     setSyncing(id);
     try {
@@ -65,10 +65,10 @@ export default function SucursalesPage() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`¿Eliminar sucursal "${name}"? Se borrarán todos sus datos.`)) return;
+    if (!confirm(`¿Desactivar sucursal "${name}"? Se detendrá su sincronización y se conservará todo el historial.`)) return;
     try {
       await api.deleteBranch(id);
-      toast.success("Sucursal eliminada");
+      toast.success("Sucursal desactivada");
       load();
     } catch (err) { toast.error(String(err)); }
   };
@@ -169,7 +169,7 @@ export default function SucursalesPage() {
                 <button onClick={() => { setEditing(b); setShowForm(true); }} className="p-2 rounded-xl border border-border hover:bg-secondary transition">
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
-                <button onClick={() => handleDelete(b.id, b.name)} className="p-2 rounded-xl border border-red-200 text-red-500 hover:bg-red-50 transition">
+                <button onClick={() => handleDelete(b.id, b.name)} disabled={!b.active} title="Desactivar conservando historial" aria-label={`Desactivar ${b.name}`} className="p-2 rounded-xl border border-red-200 text-red-500 hover:bg-red-50 transition disabled:opacity-40">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>

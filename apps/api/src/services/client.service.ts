@@ -1,5 +1,10 @@
-import { prisma } from "../lib/prisma";
-import { notFound } from "../lib/errors";
+import { z } from "zod";
+import { assertMoney } from "../lib/money-validation";
+const clientFields = z.object({name:z.string().trim().min(1),phone:z.string().nullish(),email:z.string().nullish(),address:z.string().nullish(),notes:z.string().nullish(),active:z.boolean().optional()}).strict();
+function parseClient<T extends z.ZodTypeAny>(schema:T, value:unknown):z.infer<T> { const r=schema.safeParse(value); if(!r.success) throw badRequest("Datos de cliente inválidos",r.error.flatten()); return r.data; }
+function debtMedium(value:unknown) { if(value != null && value !== "cash" && value !== "bank") throw badRequest("Medio inválido"); }
+import { prisma, moneyTransaction } from "../lib/prisma";
+import { badRequest, notFound } from "../lib/errors";
 
 // Usuario + equipo (PC) que hace la acción. Compatible con getActor(req).
 type ActorLike = { id?: string | null; name?: string | null; deviceId?: string | null; deviceName?: string | null };
@@ -38,9 +43,12 @@ export async function createClient(data: {
   initialDebtDescription?: string;
   initialDebtMedium?: "cash" | "bank";
 }) {
+  return moneyTransaction(async () => {
   const { initialDebt, initialDebtDescription, initialDebtMedium, ...clientData } = data;
 
-  const client = await prisma.client.create({ data: clientData });
+  if (initialDebt !== undefined) assertMoney(initialDebt);
+  debtMedium(initialDebtMedium);
+  const client = await prisma.client.create({ data: parseClient(clientFields,clientData) });
 
   // Si hay deuda inicial, registrarla y reflejarla en el saldo
   if (initialDebt && initialDebt > 0) {
@@ -64,6 +72,8 @@ export async function createClient(data: {
     where: { id: client.id },
     include: { debts: { where: { paid: false }, orderBy: { createdAt: "desc" } } },
   });
+
+  });
 }
 
 export async function updateClient(id: string, data: Partial<{
@@ -74,10 +84,13 @@ export async function updateClient(id: string, data: Partial<{
   notes: string;
   active: boolean;
 }>) {
-  return prisma.client.update({ where: { id }, data });
+  return prisma.client.update({ where: { id }, data: parseClient(clientFields.partial(),data) });
 }
 
 export async function addDebt(clientId: string, description: string, amount: number, date?: string, actor?: ActorLike, medium?: "cash" | "bank" | null) {
+  return moneyTransaction(async () => {
+  assertMoney(amount);
+  debtMedium(medium);
   const [debt] = await prisma.$transaction([
     prisma.clientDebt.create({
       data: { clientId, description, amount, medium: medium ?? null, createdBy: actor?.id ?? null, createdByName: actor?.name ?? null, deviceId: actor?.deviceId ?? null, deviceName: actor?.deviceName ?? null, ...(date ? { createdAt: new Date(date + "T12:00:00") } : {}) },
@@ -88,46 +101,20 @@ export async function addDebt(clientId: string, description: string, amount: num
     }),
   ]);
   return debt;
+
+  });
 }
 
 export async function payDebt(debtId: string, paidAmount?: number, actor?: ActorLike) {
-  const debt = await prisma.clientDebt.findUnique({ where: { id: debtId } });
+  return moneyTransaction(async () => {
+  const debt = await prisma.clientDebt.findUnique({where:{id:debtId}});
   if (!debt) throw notFound("Deuda no encontrada");
-  if (debt.paid) throw new Error("Esta deuda ya fue pagada");
+  const amount = paidAmount ?? debt.amount - (debt.paidAmount ?? 0);
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw badRequest("Monto inválido");
+  // Ruta heredada: exige un medio explícito antes de mover dinero.
+  throw badRequest("Registra el abono desde Clientes indicando efectivo o banco.");
 
-  // El monto realmente pagado puede ser parcial. Antes esto siempre decrementaba
-  // el saldo del cliente por debt.amount (el total) y marcaba paid:true aunque el
-  // pago fuera parcial — eso "perdonaba" la diferencia y dejaba el saldo mal.
-  const remaining = debt.amount - (debt.paidAmount ?? 0);
-  const actual = Math.min(paidAmount ?? remaining, remaining);
-  if (actual <= 0) throw new Error("El monto pagado debe ser mayor a 0");
-
-  const newPaidAmount = (debt.paidAmount ?? 0) + actual;
-  const fullyPaid = newPaidAmount >= debt.amount;
-
-  await prisma.$transaction([
-    prisma.clientDebt.update({
-      where: { id: debtId },
-      data: {
-        paid: fullyPaid,
-        // paidAt marca CUÁNDO entró dinero por esta deuda. El saldo esperado filtra
-        // los cobros por paidAt, así que un abono PARCIAL también debe fecharse; si
-        // solo se marcara al quedar 100% pagada, los abonos parciales no se reflejaban
-        // en el saldo (dinero cobrado que "no aparecía").
-        paidAt: new Date(),
-        paidAmount: newPaidAmount,
-        paidBy: actor?.id ?? null,
-        paidByName: actor?.name ?? null,
-        paidDeviceId: actor?.deviceId ?? null,
-        paidDeviceName: actor?.deviceName ?? null,
-      },
-    }),
-    prisma.client.update({
-      where: { id: debt.clientId },
-      data: { pendingDebt: { decrement: actual } },
-    }),
-  ]);
-  return { ok: true, applied: actual, fullyPaid };
+  });
 }
 
 /**
@@ -142,74 +129,46 @@ export async function registerClientPayment(
   medium: "cash" | "bank" = "cash",
   opts?: { cashAmount?: number; bankAmount?: number; actor?: ActorLike },
 ) {
+  return moneyTransaction(async () => {
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
-
-  const totalPending = client.pendingDebt;
-  if (totalPending <= 0) throw new Error("El cliente no tiene deuda pendiente");
-
-  // Movimiento mixto (#3): efectivo + transferencia en un mismo abono.
-  const cashIn = Math.round(opts?.cashAmount ?? 0);
-  const bankIn = Math.round(opts?.bankAmount ?? 0);
-  const isMixed = cashIn > 0 && bankIn > 0;
-  const requested = isMixed ? cashIn + bankIn : (payAll ? totalPending : Math.round(amount));
-
-  let toApply = payAll ? totalPending : Math.min(requested, totalPending);
-  if (toApply <= 0) throw new Error("El monto del abono debe ser mayor a 0");
-
-  // Bolsas de medio de pago para repartir en FIFO.
-  let cashPool = isMixed ? cashIn : (medium === "cash" ? toApply : 0);
-  let bankPool = isMixed ? bankIn : (medium === "bank" ? toApply : 0);
-
-  const debts = await prisma.clientDebt.findMany({
-    where: { clientId, paid: false },
-    orderBy: { createdAt: "asc" },
-  });
-
-  const applied = toApply;
-  const ops: ReturnType<typeof prisma.clientDebt.update>[] = [];
-
+  if (medium !== "cash" && medium !== "bank") throw badRequest("Medio inválido");
+  const cashIn = opts?.cashAmount ?? 0, bankIn = opts?.bankAmount ?? 0;
+  if (![cashIn, bankIn].every(n => Number.isSafeInteger(n) && n >= 0)) throw badRequest("Monto inválido");
+  const split = cashIn + bankIn > 0;
+  const requested = split ? cashIn + bankIn : (payAll ? client.pendingDebt : amount);
+  if (!Number.isSafeInteger(requested) || requested <= 0) throw badRequest("Monto inválido");
+  const debts = await prisma.clientDebt.findMany({where:{clientId, paid:false},orderBy:[{createdAt:"asc"},{id:"asc"}]});
+  const available = debts.reduce((sum,d) => sum + Math.max(0,d.amount-(d.paidAmount ?? 0)),0);
+  if (available !== client.pendingDebt) throw badRequest("El saldo histórico necesita conciliación antes de registrar el abono.");
+  assertMoney(requested);
+  if (requested > available) throw badRequest("El abono supera la deuda pendiente. No se admite sobrepago de clientes.");
+  const applied = requested;
+  if (applied <= 0) throw badRequest("El cliente no tiene deuda pendiente");
+  let left = applied, cashPool = split ? cashIn : (medium === "cash" ? applied : 0);
   for (const debt of debts) {
-    if (toApply <= 0) break;
-    const remaining = debt.amount - (debt.paidAmount ?? 0);
-    const apply = Math.min(toApply, remaining);
-    // Reparte este tramo entre efectivo y banco según las bolsas disponibles.
-    const cashPart = Math.min(apply, cashPool);
-    const bankPart = apply - cashPart;
-    cashPool -= cashPart;
-    bankPool -= bankPart;
-    const newPaid = (debt.paidAmount ?? 0) + apply;
-    const fullyPaid = newPaid >= debt.amount;
-    ops.push(
-      prisma.clientDebt.update({
-        where: { id: debt.id },
-        data: {
-          paidAmount: newPaid,
-          paid: fullyPaid,
-          // Ver nota en payDebt: los abonos parciales también deben fecharse para
-          // que el dinero cobrado se refleje en el saldo esperado.
-          paidAt: new Date(),
-          paidBy: opts?.actor?.id ?? null,
-          paidByName: opts?.actor?.name ?? null,
-          paidDeviceId: opts?.actor?.deviceId ?? null,
-          paidDeviceName: opts?.actor?.deviceName ?? null,
-          ...(cashPart > 0 ? { paidCash: { increment: cashPart } } : {}),
-          ...(bankPart > 0 ? { paidBank: { increment: bankPart } } : {}),
-        },
-      }),
-    );
-    toApply -= apply;
+    if (!left) break;
+    const part = Math.min(left, debt.amount - (debt.paidAmount ?? 0));
+    const cash = Math.min(part,cashPool), bank = part-cash;
+    cashPool -= cash; left -= part;
+    const paidAt = new Date();
+    for (const [paidCash,paidBank] of [[cash,0],[0,bank]]) {
+      if (!paidCash && !paidBank) continue;
+      await prisma.clientDebtPayment.create({data:{
+        debtId:debt.id,clientId,description:debt.description,paidAmount:paidCash+paidBank,paidCash,paidBank,paidAt,
+        paidBy:opts?.actor?.id ?? null,paidByName:opts?.actor?.name ?? null,
+        paidDeviceId:opts?.actor?.deviceId ?? null,paidDeviceName:opts?.actor?.deviceName ?? null,
+      }});
+    }
+    const newPaid = (debt.paidAmount ?? 0)+part;
+    await prisma.clientDebt.update({where:{id:debt.id},data:{paidAmount:newPaid,paid:newPaid>=debt.amount,
+      paidCash:{increment:cash},paidBank:{increment:bank},paidAt,
+      paidBy:opts?.actor?.id ?? null,paidByName:opts?.actor?.name ?? null,paidDeviceId:opts?.actor?.deviceId ?? null,paidDeviceName:opts?.actor?.deviceName ?? null}});
   }
+  await prisma.client.update({where:{id:clientId},data:{pendingDebt:{decrement:applied}}});
+  return {applied,remaining:client.pendingDebt-applied};
 
-  await prisma.$transaction([
-    ...ops,
-    prisma.client.update({
-      where: { id: clientId },
-      data: { pendingDebt: { decrement: applied } },
-    }),
-  ]);
-
-  return { applied, remaining: totalPending - applied };
+  });
 }
 
 export async function getDebtors() {
@@ -221,5 +180,25 @@ export async function getDebtors() {
 }
 
 export async function deleteClient(id: string) {
+  return moneyTransaction(async () => {
+  if (await prisma.clientDebt.count({where:{clientId:id}})) throw badRequest("El cliente tiene historial financiero. Inactívalo para conservarlo.");
   await prisma.client.delete({ where: { id } });
+
+  });
+}
+
+export async function reverseClientPayment(id: string) {
+  return moneyTransaction(async () => {
+  const payment = await prisma.clientDebtPayment.findUnique({where:{id}});
+  if (!payment) throw badRequest("El abono ya no existe. Actualiza Movimientos.");
+  const debt = await prisma.clientDebt.findUniqueOrThrow({where:{id:payment.debtId}});
+  await prisma.clientDebtPayment.delete({where:{id}});
+  const latest = await prisma.clientDebtPayment.findFirst({where:{debtId:debt.id},orderBy:{paidAt:"desc"}});
+  const paid = Math.max(0,(debt.paidAmount ?? 0)-payment.paidAmount);
+  await prisma.clientDebt.update({where:{id:debt.id},data:{paidAmount:paid,paid:paid>=debt.amount,
+    paidCash:{decrement:payment.paidCash},paidBank:{decrement:payment.paidBank},paidAt:latest?.paidAt ?? null,
+    paidBy:latest?.paidBy ?? null,paidByName:latest?.paidByName ?? null,paidDeviceId:latest?.paidDeviceId ?? null,paidDeviceName:latest?.paidDeviceName ?? null}});
+  await prisma.client.update({where:{id:debt.clientId},data:{pendingDebt:{increment:payment.paidAmount}}});
+
+  });
 }

@@ -260,6 +260,12 @@ model Driver {
 }
 
 model ShipdayOrder {
+  manualOverride Boolean @default(false)
+  manualOriginalValue Int?
+  manualOverrideBy String?
+  manualOverrideAt DateTime?
+  shipdayDeliveryValue Int?
+  clientDebt ClientDebt?
   id              String    @id @default(cuid())
   shipdayOrderId  String    @unique
   branchId        String
@@ -440,6 +446,7 @@ model MonthlyClose {
 // ============================================================
 
 model Client {
+  payments ClientDebtPayment[]
   id          String   @id @default(cuid())
   name        String
   phone       String?
@@ -456,6 +463,9 @@ model Client {
 }
 
 model ClientDebt {
+  sourceOrderId String? @unique
+  sourceOrder ShipdayOrder? @relation(fields: [sourceOrderId], references: [id], onDelete: Restrict)
+  payments ClientDebtPayment[]
   id            String    @id @default(cuid())
   clientId      String
   description   String
@@ -694,4 +704,26 @@ model ActivityLog {
 
   @@index([deviceId])
   @@index([createdAt])
+}
+
+// Un abono es un evento fechado; los acumulados de ClientDebt son solo un resumen.
+model ClientDebtPayment {
+  id String @id @default(cuid())
+  debtId String
+  clientId String
+  description String
+  paidAmount Int
+  paidCash Int @default(0)
+  paidBank Int @default(0)
+  paidAt DateTime @default(now())
+  paidBy String?
+  paidByName String?
+  paidDeviceId String?
+  paidDeviceName String?
+  legacyAggregate Boolean @default(false)
+  debt ClientDebt @relation(fields: [debtId], references: [id], onDelete: Restrict)
+  client Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  @@index([debtId])
+  @@index([clientId])
+  @@index([paidAt])
 }

@@ -165,7 +165,7 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
     prisma.bankTransaction.findMany({ where: { date: range } }),
     prisma.driverPayment.findMany({ where: { date: range } }),
     prisma.baseTransaction.findMany({ where: { date: range } }),
-    prisma.clientDebt.findMany({ where: { paid: true, paidAt: range }, select: { paidCash: true, paidBank: true, paidAmount: true } }),
+    prisma.clientDebtPayment.findMany({ where: { paidAt: range }, select: { paidCash: true, paidBank: true, paidAmount: true } }),
     prisma.clientDebt.aggregate({ where: { createdAt: range }, _sum: { amount: true } }),
     prisma.shipdayOrder.findMany({ where: { deliveredAt: range, status: DELIVERED_FILTER }, select: { companyAmount: true } }),
     prisma.shiftClose.findUnique({ where: { date_shift: { date, shift: "close" } } }),

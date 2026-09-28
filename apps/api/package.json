@@ -18,7 +18,10 @@
     "simulate-week": "tsx scripts/simulate-week.ts",
     "simulate-month": "tsx scripts/simulate-month.ts",
     "simulate-2months": "tsx scripts/simulate-2months.ts",
-    "reset-all": "tsx scripts/reset-all.ts"
+    "reset-all": "tsx scripts/reset-all.ts",
+    "test:financial": "node tests/run-financial.cjs",
+    "test:blockers": "node tests/run-post-claude.cjs",
+    "test:migration-upgrade": "node tests/run-migration-upgrade.cjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

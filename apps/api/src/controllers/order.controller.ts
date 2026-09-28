@@ -1,14 +1,22 @@
+import { randomUUID } from "node:crypto";
+import { applyDebtDelta } from "../services/driver.service";
 import type { Request, Response } from "express";
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { toBogotaDateStr } from "../lib/date-range";
 
 export async function manualCreate(req: Request, res: Response) {
+  const result = await moneyTransaction(async () => {
   const { branchId, driverId, deliveryValue, orderNumber, customerName, clientId, addToClientDebt, notes } = req.body;
-  if (!branchId || !deliveryValue) throw badRequest("branchId y deliveryValue son requeridos");
+  if (!branchId || !Number.isSafeInteger(deliveryValue) || deliveryValue <= 0) throw badRequest("branchId y deliveryValue son requeridos");
 
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw notFound("Sucursal no encontrada");
+  if (!branch.active) throw badRequest("La sucursal está desactivada");
+  if (driverId) {
+    const driver = await prisma.driver.findUnique({where:{id:driverId}});
+    if (!driver || driver.branchId !== branchId) throw badRequest("El domiciliario no pertenece a esta sucursal");
+  }
 
   if (clientId) {
     const client = await prisma.client.findUnique({ where: { id: clientId } });
@@ -22,7 +30,7 @@ export async function manualCreate(req: Request, res: Response) {
   const order = await prisma.$transaction(async (tx) => {
     const created = await tx.shipdayOrder.create({
       data: {
-        shipdayOrderId: `manual-${Date.now()}`,
+        shipdayOrderId: `manual-${randomUUID()}`,
         branchId,
         driverId: driverId || null,
         orderNumber: orderNumber || null,
@@ -39,10 +47,7 @@ export async function manualCreate(req: Request, res: Response) {
     });
 
     if (driverId && companyAmount > 0) {
-      await tx.driver.update({
-        where: { id: driverId },
-        data: { pendingDebt: { increment: companyAmount } },
-      });
+      await applyDebtDelta(tx, driverId, companyAmount);
       const dateStr = toBogotaDateStr(new Date());
       await tx.dailyDriverStat.upsert({
         where: { date_driverId: { date: dateStr, driverId } },
@@ -55,7 +60,7 @@ export async function manualCreate(req: Request, res: Response) {
     if (clientId && addToClientDebt) {
       const desc = `Domicilio${orderNumber ? ` #${orderNumber}` : ""} — ${new Date().toLocaleDateString("es-CO")}`;
       await tx.clientDebt.create({
-        data: { clientId, description: desc, amount: Math.round(deliveryValue) },
+        data: { sourceOrderId: created.id, clientId, description: desc, amount: Math.round(deliveryValue) },
       });
       await tx.client.update({
         where: { id: clientId },
@@ -66,5 +71,8 @@ export async function manualCreate(req: Request, res: Response) {
     return created;
   });
 
-  res.status(201).json({ ...order, companyAmount });
+  return { ...order, companyAmount };
+
+  });
+  res.status(201).json(result);
 }

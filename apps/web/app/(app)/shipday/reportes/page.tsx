@@ -183,6 +183,11 @@ function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; mo
         <RepCard label="Total Nómina" value={fmt(report.payroll.total)} sub={`💵 ${fmt(report.payroll.cash)} · 🏦 ${fmt(report.payroll.bank)}`} />
       </div>
 
+      <div className="rounded-xl border bg-card p-4 space-y-2">
+        <p className="font-bold">Deuda actual de domiciliarios: {fmt(report.debtReconciliation.total)}</p>
+        <p className="text-sm text-muted-foreground">Bases pendientes originadas en el mes: {fmt(report.debtReconciliation.basesCurrentMonth)} · Bases de meses anteriores: {fmt(report.debtReconciliation.basesPrevious)} · Comisiones pendientes: {fmt(report.debtReconciliation.commission)}</p>
+        <p className="text-xs text-muted-foreground">Estos saldos actuales suman lo mostrado en Deudas. Los indicadores del período conservan la actividad del mes seleccionado.</p>
+      </div>
       {/* Indicadores que deben cuadrar — con enlaces directos al descuadre */}
       <div className="space-y-2">
         <BalanceRow

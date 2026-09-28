@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { conflict } from "../lib/errors";
 import { todayBogota } from "../lib/date-range";
 
@@ -68,6 +68,7 @@ export async function registerShift(data: {
   createdBy?: string | null;
   createdByName?: string | null;
 }) {
+  return moneyTransaction(async () => {
   const totalCounted = sumDenominations(data.denominations);
   const difference = totalCounted - data.expectedAmount;
 
@@ -122,11 +123,16 @@ export async function registerShift(data: {
       createdByName: data.createdByName ?? null,
     },
   });
+
+  });
 }
 
 export async function deleteShift(id: string) {
+  return moneyTransaction(async () => {
   await prisma.shiftClose.delete({ where: { id } });
   return { ok: true };
+
+  });
 }
 
 export async function listShifts(from?: string, to?: string) {

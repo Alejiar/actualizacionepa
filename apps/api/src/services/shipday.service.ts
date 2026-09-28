@@ -234,7 +234,7 @@ export interface ShipdayCompletedOrder {
   delivery?: { name?: string; address?: string } | null;
 }
 
-export async function getCompletedOrders(apiKey: string, from: string, to: string): Promise<ShipdayCompletedOrder[]> {
+export async function getCompletedOrders(apiKey: string, from: string, to: string): Promise<ShipdayCompletedOrder[] & { partialError?: string }> {
   // IMPORTANTE: Shipday interpreta startTime/endTime como UTC (sin zona horaria).
   // Si se usa un "23:59:59" fijo del día local, en Colombia (UTC-5) ese límite es
   // las 6:59pm y se pierden los pedidos entregados en la noche. Por eso:
@@ -251,6 +251,7 @@ export async function getCompletedOrders(apiKey: string, from: string, to: strin
   const PAGE = 100;
   const MAX_PAGES = 100; // tope de seguridad (hasta 10.000 pedidos en el rango)
   const all: ShipdayCompletedOrder[] = [];
+  let partialError: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     let batch: ShipdayCompletedOrder[];
     try {
@@ -271,6 +272,7 @@ export async function getCompletedOrders(apiKey: string, from: string, to: strin
       // si falla la PRIMERA página propagamos el error (no hay nada que salvar y el sync
       // debe quedar marcado en error).
       if (all.length === 0) throw err;
+      partialError = `Sincronización incompleta: ${err instanceof Error ? err.message : String(err)}`;
       console.warn(
         `[shipday/query] página ${page} falló tras reintentos; se continúa con ${all.length} pedidos parciales (el próximo barrido traerá el resto):`,
         err instanceof Error ? err.message : err,
@@ -282,7 +284,7 @@ export async function getCompletedOrders(apiKey: string, from: string, to: strin
     if (batch.length < PAGE) break; // última página parcial
   }
   // Solo los realmente entregados y NO marcados como incompletos.
-  return all.filter(o => !o.incomplete && o.deliveryTime);
+  return Object.assign(all.filter(o => !o.incomplete && o.deliveryTime), { partialError });
 }
 
 // Trae UNA página de /orders/query reintentando ante errores transitorios (rate limit,

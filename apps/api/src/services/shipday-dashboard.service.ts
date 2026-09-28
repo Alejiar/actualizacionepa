@@ -82,7 +82,7 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     prisma.conversion.findMany({ where: { date: cumRange }, select: { type: true, amount: true } }),
     prisma.driverPayment.findMany({ where: { date: cumRange }, select: { medium: true, amount: true, notes: true } }),
     prisma.baseTransaction.findMany({ where: { date: cumRange }, select: { type: true, cashAmount: true, bankAmount: true, amount: true, notes: true } }),
-    prisma.clientDebt.findMany({ where: { paidAt: cumRange }, select: { paidCash: true, paidBank: true } }),
+    prisma.clientDebtPayment.findMany({ where: { paidAt: cumRange }, select: { paidCash: true, paidBank: true } }),
     // Deudas creadas en el período que SÍ desembolsaron dinero (préstamo/adelanto):
     // el dinero salió del medio elegido al crearlas. Se descuenta aquí; el reingreso
     // al cobrar ya lo cubre `clientPays` (paidCash/paidBank).
@@ -231,13 +231,13 @@ export async function getDebtsDashboard(branchId?: string) {
       where: { ...branchFilter, pendingDebt: { gt: 0 } },
       include,
       orderBy: [{ pendingDebt: "desc" }, { name: "asc" }],
-      take: 100,
+
     }),
     prisma.driver.findMany({
       where: { ...branchFilter, pendingDebt: 0, creditAmount: { gt: 0 } },
       include,
       orderBy: [{ creditAmount: "desc" }, { name: "asc" }],
-      take: 100,
+
     }),
   ]);
   return { debtors, creditors };

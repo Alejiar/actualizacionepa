@@ -1,5 +1,5 @@
 // Auto-inicialización del backend al primer arranque del .exe en un PC nuevo:
-// 1) Si el esquema no existe, aplica la migración SQL de Prisma.
+// 1) Verifica que TODAS las migraciones estén aplicadas; si faltan, aborta sin escribir.
 // 2) Si no hay settings, los crea con valores por defecto.
 // 3) Si no hay usuarios, crea el admin con ADMIN_EMAIL/ADMIN_PASSWORD del .env.
 // (Ya NO se siembran trabajadores por defecto: los domiciliarios vienen de Shipday.)
@@ -11,62 +11,25 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 
-function findMigrationSql(): string | null {
-  // En el .exe: resources/api/prisma/migrations/<ts>_init/migration.sql
-  // En dev:    apps/api/prisma/migrations/<ts>_init/migration.sql
-  const candidates = [
-    path.join(__dirname, "..", "..", "prisma", "migrations"),
-    path.join(__dirname, "..", "prisma", "migrations"),
-    path.join(process.cwd(), "prisma", "migrations"),
-  ];
-  for (const dir of candidates) {
-    if (!fs.existsSync(dir)) continue;
-    const subs = fs
-      .readdirSync(dir)
-      .filter((s) => fs.statSync(path.join(dir, s)).isDirectory())
-      .sort();
-    for (const sub of subs) {
-      const sql = path.join(dir, sub, "migration.sql");
-      if (fs.existsSync(sql)) return fs.readFileSync(sql, "utf8");
-    }
+/** Nunca aplica SQL parcial. La instalación debe ejecutar todas las migraciones
+ * con db:deploy ANTES de arrancar; falla cerrado sin sembrar ni modificar datos. */
+async function assertMigrationsApplied() {
+  const candidates = [path.resolve(__dirname,"../../prisma/migrations"),path.resolve(__dirname,"../prisma/migrations"),path.resolve(process.cwd(),"prisma/migrations")];
+  const dir = candidates.find(p => fs.existsSync(p));
+  if (!dir) throw new Error("Faltan los archivos de migración. Reinstala el paquete completo.");
+  const expected = fs.readdirSync(dir).filter(n => fs.existsSync(path.join(dir,n,"migration.sql")));
+  let rows: {migration_name:string;finished_at:Date|null;rolled_back_at:Date|null}[];
+  try { rows = await prisma.$queryRawUnsafe('SELECT migration_name, finished_at, rolled_back_at FROM "_prisma_migrations"'); }
+  catch { throw new Error("Base sin migraciones. Ejecuta npm run db:deploy -w @cash-buddy/api antes de iniciar."); }
+  const done = new Set(rows.filter(r=>r.finished_at && !r.rolled_back_at).map(r=>r.migration_name));
+  if (!expected.length || expected.some(n=>!done.has(n)) || rows.some(r=>!r.finished_at && !r.rolled_back_at)) {
+    throw new Error("Migraciones pendientes o fallidas. Ejecuta npm run db:deploy -w @cash-buddy/api antes de iniciar.");
   }
-  return null;
-}
-
-async function schemaExists(): Promise<boolean> {
-  try {
-    await prisma.$queryRawUnsafe('SELECT 1 FROM "User" LIMIT 1');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function applySchema() {
-  const sql = findMigrationSql();
-  if (!sql) {
-    console.error("[init] migration.sql no encontrado");
-    return;
-  }
-  // Prisma envía cada query como prepared statement (1 sentencia por llamada),
-  // así que dividimos el SQL en sentencias y las ejecutamos una a una.
-  // Las migraciones que genera Prisma terminan cada sentencia con ";\n".
-  const statements = sql
-    .split(";")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  for (const stmt of statements) {
-    await prisma.$executeRawUnsafe(stmt);
-  }
-  console.log(`[init] ✓ Esquema creado (${statements.length} sentencias)`);
 }
 
 export async function autoInit(): Promise<void> {
   try {
-    if (!(await schemaExists())) {
-      console.log("[init] Esquema no encontrado, aplicando migración inicial...");
-      await applySchema();
-    }
+    await assertMigrationsApplied();
 
     // Settings singleton
     await prisma.settings.upsert({

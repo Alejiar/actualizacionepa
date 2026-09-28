@@ -1,5 +1,6 @@
+import { refreshOrderStats } from "../lib/order-stats";
 import type { Request, Response } from "express";
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { toBogotaDateStr } from "../lib/date-range";
 import { applyDebtDelta } from "../services/driver.service";
 
@@ -10,6 +11,9 @@ const DELIVERED_STATES = new Set([
 ]);
 
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN ?? "";
+// Solo limita trabajo autenticado de ESTA ruta; no comparte contadores con caja.
+let activeWebhooks = 0;
+const MAX_ACTIVE_WEBHOOKS = 4;
 
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -63,17 +67,27 @@ export async function shipdayWebhook(req: Request, res: Response) {
     .filter((v): v is string => typeof v === "string" && v.length > 0);
   const ok = !!WEBHOOK_TOKEN && tokens.some((t) => t === WEBHOOK_TOKEN || t === `Bearer ${WEBHOOK_TOKEN}`);
   if (!ok) {
-    // Diagnóstico (sin exponer valores): qué headers llegaron, para depurar si Shipday
-    // envía el token con otro nombre.
-    console.warn("[webhook] 401 — headers presentes:", Object.keys(h).join(", "));
+    // Sin transacciones, consultas, colas internas ni contadores para tráfico falso.
     return res.status(401).json({ error: "Token inválido o ausente" });
   }
-
+  if (activeWebhooks >= MAX_ACTIVE_WEBHOOKS) {
+    res.setHeader("Retry-After", "2");
+    return res.status(503).json({error:"Webhook ocupado; reintenta la entrega."});
+  }
+  activeWebhooks++;
+  try {
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
   if (!branch) return res.status(404).json({ error: "Sucursal no encontrada" });
+  if (!branch.active) return res.status(200).json({ok:true,processed:0,ignored:1});
 
   const body = req.body;
   const items: unknown[] = Array.isArray(body) ? body : [body];
+  if (items.length > 100) return res.status(400).json({error:"Máximo 100 eventos por petición."});
+
+  const result = await moneyTransaction(async () => {
+  // La sucursal pudo desactivarse mientras esta petición esperaba su turno.
+  const currentBranch = await prisma.branch.findUnique({where:{id:branchId}});
+  if (!currentBranch?.active) return {status:200,body:{ok:true,processed:0,ignored:items.length}};
 
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
   const commissionPercent = settings?.shipdayCommission ?? 30;
@@ -100,7 +114,19 @@ export async function shipdayWebhook(req: Request, res: Response) {
 
     // Idempotente: si ya existe, no duplicar.
     const existing = await prisma.shipdayOrder.findUnique({ where: { shipdayOrderId: orderId } });
-    if (existing) { ignored++; continue; }
+    if (existing) {
+      if (!existing.driverId && existing.companyAmount > 0) {
+        const id = carrier.id ?? order.assignedCarrierId ?? asObj(order.assignedCarrier).id;
+        const driver = id == null ? null : await prisma.driver.findUnique({where:{shipdayDriverId_branchId:{shipdayDriverId:String(id),branchId}}});
+        if (driver) {
+          await prisma.shipdayOrder.update({where:{id:existing.id},data:{driverId:driver.id}});
+          await applyDebtDelta(prisma,driver.id,existing.companyAmount);
+          await refreshOrderStats(prisma,{...existing,driverId:driver.id});
+          processed++; continue;
+        }
+      }
+      ignored++; continue;
+    }
 
     // Lápida: si un admin eliminó este pedido (vía EditRequest), no recrearlo aunque
     // Shipday reenvíe el evento de entrega. Ver modelo DeletedShipdayOrder.
@@ -145,6 +171,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
           driverId,
           orderNumber,
           deliveryValue,
+          shipdayDeliveryValue: deliveryValue,
           companyAmount,
           customerName,
           customerAddress,
@@ -171,5 +198,9 @@ export async function shipdayWebhook(req: Request, res: Response) {
 
   // Siempre 200 ante token válido: así Shipday no reintenta en bucle por eventos que a
   // propósito ignoramos (no entregados, duplicados, o anteriores al arranque).
-  res.json({ ok: true, processed, ignored });
+  return { status:200, body:{ ok: true, processed, ignored } };
+
+  });
+  res.status(result.status).json(result.body);
+  } finally { activeWebhooks--; }
 }

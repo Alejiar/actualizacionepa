@@ -146,8 +146,9 @@ exista.
   existe **en 0** y el polling trae un valor **> 0**, se **sana una sola vez** — se
   actualiza valor, comisión, número y datos del cliente, y se **cuenta por primera
   vez** (deuda vía `applyDebtDelta` + `DailyDriverStat`), porque el stub en 0 nunca se
-  contó. La condición `deliveryValue === 0 && nuevo > 0` evita tocar pedidos ya
-  correctos o corregidos a mano (una edición vía `EditRequest` deja el valor > 0).
+  contó. La condición `deliveryValue === 0 && nuevo > 0` identifica candidatos,
+  pero solo se sanan si `manualOverride` es false. Una corrección aprobada puede
+  dejar legítimamente el valor en $0 y debe sobrevivir toda sincronización.
 - Se limita a pedidos creados a partir de `SELF_HEAL_SINCE` (fecha **fija** =
   despliegue del arreglo, 03-ago-2026). Fue un pedido explícito del dueño: **no tocar
   los pedidos viejos que ya quedaron en $0**, solo que de aquí en adelante se corrijan
@@ -240,6 +241,21 @@ si `prisma generate` falla con `EPERM ... query_engine-windows.dll.node`,
 reintentar, y vuelve a abrirlo al terminar.
 
 ## Git
+
+### Protección añadida tras la auditoría independiente (septiembre de 2026)
+
+- Una corrección de tarifa guarda `manualOverride`, valor original, aprobador y
+  fecha. `shipdayDeliveryValue` conserva la tarifa externa conocida por separado.
+- `DELETE /branches/:id` desactiva la sucursal; no elimina su libro contable.
+- Gastos: categoría 3/4, monto entero positivo. El usuario normal solo crea
+  pendientes. Corregir o eliminar uno confirmado exige `EditRequest` aprobado.
+- Autenticar el webhook antes de consultar la BD o entrar en `moneyTransaction`.
+  La cola local espera fuera de PostgreSQL; mantener el candado entre procesos.
+- El arranque verifica todas las migraciones. Si faltan, aborta sin sembrar datos.
+  En una instalación/actualización, ejecutar `npm run db:deploy -w @cash-buddy/api`
+  y generar Prisma antes de iniciar. Nunca aplicar solo la primera migración.
+- No cambiar la fórmula de bases del mes ni la política de reversiones históricas
+  sin una decisión explícita del dueño.
 
 - Las migraciones de Prisma (`apps/api/prisma/migrations/**/*.sql`) SÍ deben
   versionarse. El `.gitignore` tiene una regla `*.sql` para respaldos de

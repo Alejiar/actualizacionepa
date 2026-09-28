@@ -1,3 +1,4 @@
+import { badRequest } from "../lib/errors";
 import type { Request, Response } from "express";
 import * as svc from "../services/client.service";
 import { getActor } from "../lib/actor";
@@ -27,7 +28,8 @@ export async function remove(req: Request, res: Response) {
 export async function addDebt(req: Request, res: Response) {
   const { description, amount, date, medium } = req.body;
   const actor = getActor(req);
-  const med = medium === "cash" || medium === "bank" ? medium : null;
+  if (medium != null && medium !== "cash" && medium !== "bank") throw badRequest("Medio inválido");
+  const med = medium ?? null;
   res.status(201).json(await svc.addDebt(req.params.id, description, amount, date, actor, med));
 }
 
@@ -39,6 +41,7 @@ export async function payDebt(req: Request, res: Response) {
 export async function payClient(req: Request, res: Response) {
   const { amount, payAll, medium, cashAmount, bankAmount } = req.body;
   const actor = getActor(req);
+  if (medium != null && medium !== "cash" && medium !== "bank") throw badRequest("Medio inválido");
   res.json(await svc.registerClientPayment(
     req.params.id,
     amount,

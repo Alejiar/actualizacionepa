@@ -48,7 +48,7 @@ apiRouter.get("/branding", asyncHandler(settings.branding));
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 apiRouter.post("/auth/login", validate(loginSchema), asyncHandler(auth.login));
-apiRouter.post("/auth/register", validate(registerSchema), asyncHandler(auth.register));
+
 apiRouter.get("/auth/me", requireAuth, asyncHandler(auth.me));
 
 // ─── Webhooks Shipday (no requieren auth — vienen de Shipday) ─────────────────
@@ -67,6 +67,7 @@ apiRouter.get("/devices/me", asyncHandler(device.me));
 // cambio (POST/PATCH/DELETE) queda registrado con el PC y el usuario que lo hizo.
 apiRouter.use(requireAuthorizedDevice);
 apiRouter.use(logActivity);
+apiRouter.post("/auth/register", requireAdmin, validate(registerSchema), asyncHandler(auth.register));
 
 // ─── Equipos: administración (solo admin) ─────────────────────────────────────
 apiRouter.get("/devices", requireAdmin, asyncHandler(device.list));
@@ -82,7 +83,7 @@ apiRouter.delete("/devices/:id", requireAdmin, asyncHandler(device.remove));
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 apiRouter.get("/settings", asyncHandler(settings.get));
-apiRouter.patch("/settings", validate(updateSettingsSchema), asyncHandler(settings.update));
+apiRouter.patch("/settings", requireAdmin, validate(updateSettingsSchema), asyncHandler(settings.update));
 
 // ─── Libreta de campo ─────────────────────────────────────────────────────────
 apiRouter.get("/field-notes", asyncHandler(fieldNote.list));
@@ -126,8 +127,8 @@ apiRouter.post("/admin/reset", requireAdmin, asyncHandler(admin.reset));
 // ─── Sucursales ───────────────────────────────────────────────────────────────
 apiRouter.get("/branches", asyncHandler(branch.list));
 apiRouter.get("/branches/:id", asyncHandler(branch.get));
-apiRouter.post("/branches", asyncHandler(branch.create));
-apiRouter.patch("/branches/:id", asyncHandler(branch.update));
+apiRouter.post("/branches", requireAdmin, asyncHandler(branch.create));
+apiRouter.patch("/branches/:id", requireAdmin, asyncHandler(branch.update));
 apiRouter.delete("/branches/:id", requireAdmin, asyncHandler(branch.remove));
 apiRouter.post("/branches/:id/test-connection", asyncHandler(branch.testConnection));
 apiRouter.post("/branches/:id/sync", asyncHandler(branch.sync));
@@ -168,7 +169,7 @@ apiRouter.post("/sd/orders/manual", asyncHandler(order.manualCreate));
 
 // ─── Cierres mensuales ────────────────────────────────────────────────────────
 apiRouter.get("/sd/closes", asyncHandler(close.list));
-apiRouter.post("/sd/closes", asyncHandler(close.close));
+apiRouter.post("/sd/closes", requireAdmin, asyncHandler(close.close));
 apiRouter.get("/sd/report/:month", asyncHandler(close.report));
 apiRouter.get("/sd/projection/:month", asyncHandler(close.projection));
 apiRouter.get("/sd/closes/:id", asyncHandler(close.get));

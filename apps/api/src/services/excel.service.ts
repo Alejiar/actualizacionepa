@@ -85,6 +85,8 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
     ["DIFERENCIA TRANSFERENCIAS", report.transfers.diff, "zero"],
     ["SALDO DEUDAS CLIENTES", report.clientDebt.balance, "zero"],
     ["COMISIONES PENDIENTES", report.commission.pending, "zero"],
+    ["BASES PENDIENTES ANTERIORES", report.debtReconciliation.basesPrevious],
+    ["DEUDA ACTUAL DOMICILIARIOS", report.debtReconciliation.total],
   ];
   let er = 2;
   for (const [label, val, kind] of rightRows) {

@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
 
 /**
  * Reinicia TODOS los datos operativos del sistema.
@@ -9,6 +9,7 @@ import { prisma } from "../lib/prisma";
  * NO borra: usuarios, trabajadores, domiciliarios (Drivers), sucursales (Branches), Settings.
  */
 export async function resetAll(): Promise<void> {
+  return moneyTransaction(async () => {
   // Orden respetando foreign keys:
   // Primero los hijos, luego los padres.
   await prisma.$transaction([
@@ -17,6 +18,7 @@ export async function resetAll(): Promise<void> {
     prisma.day.deleteMany({}),
 
     // Clientes y deudas
+    prisma.clientDebtPayment.deleteMany({}),
     prisma.clientDebt.deleteMany({}),
     prisma.client.deleteMany({}),
 
@@ -35,7 +37,7 @@ export async function resetAll(): Promise<void> {
     prisma.monthlyClose.deleteMany({}),
 
     // Deuda de conductores Shipday → resetear a 0
-    prisma.driver.updateMany({ data: { pendingDebt: 0 } }),
+    prisma.driver.updateMany({ data: { pendingDebt: 0, creditAmount: 0, creditMedium: null } }),
 
     // Marcar configuración como no completada (vuelve al wizard de bienvenida)
     prisma.settings.upsert({
@@ -44,4 +46,6 @@ export async function resetAll(): Promise<void> {
       create: { id: "singleton", setupComplete: false },
     }),
   ]);
+
+  });
 }

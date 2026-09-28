@@ -815,6 +815,7 @@ export interface BankTransaction {
 
 // ─── Reporte mensual ──────────────────────────────────────────────────────────
 export interface MonthlyReport {
+  debtReconciliation: { total: number; basesCurrentMonth: number; basesPrevious: number; basesAllTime: number; commission: number };
   month: string;
   totalSales: number;
   expenses: { cash: number; bank: number; total: number };

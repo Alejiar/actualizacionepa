@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { todayBogota } from "../lib/date-range";
 import type { Actor } from "../lib/actor";
@@ -144,6 +144,7 @@ export async function registerShift(
   clientId: string,
   input: { driverId?: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; actor?: Actor },
 ) {
+  return moneyTransaction(async () => {
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
   if (!input.driverId) throw badRequest("Selecciona un domiciliario");
@@ -213,6 +214,8 @@ export async function registerShift(
 
     return shift;
   });
+
+  });
 }
 
 /**
@@ -222,6 +225,7 @@ export async function registerShift(
  * una sola transacción para que caja y deuda no puedan quedar desincronizados.
  */
 export async function payDriver(shiftId: string, input: { medium: "cash" | "bank"; actor?: Actor }) {
+  return moneyTransaction(async () => {
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId }, include: { hourlyClient: true } });
   if (!shift) throw notFound("Turno no encontrado");
   if (shift.driverPaid) throw badRequest("A este domiciliario ya se le pagó este turno");
@@ -260,6 +264,8 @@ export async function payDriver(shiftId: string, input: { medium: "cash" | "bank
   });
 
   return { ok: true };
+
+  });
 }
 
 /**
@@ -271,6 +277,7 @@ export async function payClient(
   clientId: string,
   input: { amount?: number; payAll?: boolean; medium: "cash" | "bank"; actor?: Actor },
 ) {
+  return moneyTransaction(async () => {
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
   const totalPending = client.pendingDebt;
@@ -332,6 +339,8 @@ export async function payClient(
 
     return { applied, remaining: totalPending - applied };
   });
+
+  });
 }
 
 /**
@@ -347,6 +356,7 @@ export async function editShift(
   shiftId: string,
   input: { driverId?: string; startTime?: string; endTime?: string; date?: string },
 ) {
+  return moneyTransaction(async () => {
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId }, include: { hourlyClient: true } });
   if (!shift) throw notFound("Turno no encontrado");
   if (shift.paidAmount > 0) {
@@ -404,6 +414,8 @@ export async function editShift(
   });
 
   return { ok: true };
+
+  });
 }
 
 /**
@@ -417,6 +429,7 @@ export async function editShift(
  * del turno) y la deuda pendiente restante se descuenta aparte. Todo cuadra a cero.
  */
 export async function deleteShift(shiftId: string) {
+  return moneyTransaction(async () => {
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId } });
   if (!shift) return;
 
@@ -442,6 +455,8 @@ export async function deleteShift(shiftId: string) {
     }
     await tx.hourlyShift.delete({ where: { id: shiftId } });
   });
+
+  });
 }
 
 /**
@@ -456,6 +471,7 @@ export async function deleteShift(shiftId: string) {
  * Devuelve true si se encargó del borrado (el llamador NO debe volver a borrar el movimiento).
  */
 export async function deleteHourlyBankTx(bankTxId: string): Promise<boolean> {
+  return moneyTransaction(async () => {
   const tx = await prisma.bankTransaction.findUnique({ where: { id: bankTxId } });
   if (!tx || !tx.hourlyShiftId) return false;
 
@@ -486,6 +502,8 @@ export async function deleteHourlyBankTx(bankTxId: string): Promise<boolean> {
     });
   }
   return true;
+
+  });
 }
 
 /** Historial global: TODOS los turnos (de todos los clientes), con el nombre del cliente,

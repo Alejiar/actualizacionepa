@@ -1,6 +1,7 @@
 # Logs
 logs
 *.log
+apps/api/tests/*.json
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*

@@ -9,11 +9,12 @@ export async function list(req: Request, res: Response) {
 
 export async function create(req: Request, res: Response) {
   const actor = getActor(req);
-  res.status(201).json(await movementService.addMovement({ ...req.body, createdBy: req.body.createdBy ?? actor.id, createdByName: actor.name, deviceId: actor.deviceId, deviceName: actor.deviceName }));
+  const expense = req.body.category === 3 || req.body.category === 4;
+  res.status(201).json(await movementService.addMovement({ ...req.body, status: expense && req.user?.role !== "admin" ? "pending" : (req.body.status ?? "confirmed"), createdBy: actor.id, createdByName: actor.name, deviceId: actor.deviceId, deviceName: actor.deviceName }));
 }
 
 export async function update(req: Request, res: Response) {
-  res.json(await movementService.updateMovement(req.params.id, req.body));
+  res.json(await movementService.updateMovement(req.params.id, req.body, req.user?.role === "admin"));
 }
 
 export async function remove(req: Request, res: Response) {

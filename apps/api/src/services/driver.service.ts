@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { bogotaDayRange, todayBogota } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, bankLinkedBaseNote } from "../lib/balance-markers";
@@ -22,7 +22,9 @@ type ActorLike = { id?: string | null; name?: string | null; deviceId?: string |
  * 1.000 a favor y entra comisión de 10.000 → debe 9.000 (no 10.000 + 1.000 aparte).
  */
 export async function applyDebtDelta(tx: Prisma.TransactionClient, driverId: string, delta: number): Promise<void> {
+  if (!Number.isSafeInteger(delta)) throw badRequest("Monto inválido");
   if (!delta) return;
+  await tx.$queryRaw`SELECT id FROM "Driver" WHERE id = ${driverId} FOR UPDATE`;
   const d = await tx.driver.findUnique({
     where: { id: driverId },
     select: { pendingDebt: true, creditAmount: true, creditMedium: true },
@@ -102,7 +104,8 @@ export async function getDriverDetail(id: string) {
 }
 
 export async function registerPayment(driverId: string, amount: number, medium: "cash" | "bank", notes?: string, actor?: ActorLike) {
-  if (!amount || amount <= 0) throw badRequest("Monto inválido");
+  return moneyTransaction(async () => {
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw badRequest("Monto inválido");
   if (medium !== "cash" && medium !== "bank") throw badRequest("Medio de pago inválido (cash o bank)");
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");
@@ -114,7 +117,7 @@ export async function registerPayment(driverId: string, amount: number, medium: 
   ]);
   const basesGiven = givenAgg._sum.amount ?? 0;
   const basesPaid = paidAgg._sum.amount ?? 0;
-  const basePending = Math.max(0, basesGiven - basesPaid);
+  const basePending = reconcileBasePending(basesGiven - basesPaid, driver.pendingDebt);
 
   // Asignación: primero a base, el resto a comisión
   const baseAlloc = Math.min(amount, basePending);
@@ -207,6 +210,8 @@ export async function registerPayment(driverId: string, amount: number, medium: 
   const excess = Math.max(0, amount - driver.pendingDebt);
   const newCredit = (driver.creditAmount ?? 0) + excess;
   return { payment, baseAlloc, commissionAlloc, basePendingBefore: basePending, excess, creditAmount: excess > 0 ? newCredit : 0 };
+
+  });
 }
 
 export async function getDriverStatement(id: string) {
@@ -271,6 +276,7 @@ export async function applyBankToDriver(
   driverId: string,
   actor?: ActorLike
 ) {
+  return moneyTransaction(async () => {
   const [bankTx, driver] = await Promise.all([
     prisma.bankTransaction.findUnique({ where: { id: bankTxId } }),
     prisma.driver.findUnique({ where: { id: driverId } }),
@@ -339,7 +345,7 @@ export async function applyBankToDriver(
       tx.baseTransaction.aggregate({ where: { driverId, type: "entrega" }, _sum: { amount: true } }),
       tx.baseTransaction.aggregate({ where: { driverId, type: "pago" }, _sum: { amount: true } }),
     ]);
-    const basePending = Math.max(0, (givenAgg._sum.amount ?? 0) - (paidAgg._sum.amount ?? 0));
+    const basePending = reconcileBasePending((givenAgg._sum.amount ?? 0) - (paidAgg._sum.amount ?? 0), driver.pendingDebt);
     const baseAlloc = Math.min(applied, basePending);
     const commissionAlloc = applied - baseAlloc;
 
@@ -358,6 +364,7 @@ export async function applyBankToDriver(
           deviceId: actor?.deviceId ?? null,
           deviceName: actor?.deviceName ?? null,
           bankTransactionId: bankTxId,
+          date: bankTx.date,
         },
       });
     }
@@ -374,6 +381,7 @@ export async function applyBankToDriver(
           deviceId: actor?.deviceId ?? null,
           deviceName: actor?.deviceName ?? null,
           bankTransactionId: bankTxId,
+          date: bankTx.date,
         },
       });
     }
@@ -414,6 +422,8 @@ export async function applyBankToDriver(
   const newDebt = Math.max(0, previousDebt - amount);
   const creditAmount = excess > 0 ? excess : 0;
   return { applied, previousDebt, newDebt, creditAmount, creditMedium: creditAmount > 0 ? medium : null, excess };
+
+  });
 }
 
 export async function payCredit(
@@ -421,6 +431,8 @@ export async function payCredit(
   medium: "cash" | "bank",
   actor?: ActorLike
 ) {
+  return moneyTransaction(async () => {
+  if (medium !== "cash" && medium !== "bank") throw badRequest("Medio inválido");
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");
   const creditAmount = driver.creditAmount ?? 0;
@@ -458,6 +470,8 @@ export async function payCredit(
   });
 
   return { paid: creditAmount, medium, driverName: driver.name };
+
+  });
 }
 
 export async function getOrdersToday(branchId?: string, date?: string) {

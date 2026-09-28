@@ -1,4 +1,8 @@
-import { prisma } from "../lib/prisma";
+import { MAX_MONEY } from "../lib/money-validation";
+import { refreshOrderStats } from "../lib/order-stats";
+import * as bankSvc from "./bank-transaction.service";
+import { reverseClientPayment } from "./client.service";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { notFound, badRequest } from "../lib/errors";
 import { toBogotaDateStr } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
@@ -6,6 +10,31 @@ import { applyDebtDelta } from "./driver.service";
 import { deleteShift as deleteHourlyShift, editShift as editHourlyShift, deleteHourlyBankTx } from "./hourly-client.service";
 
 type ChangeMap = Record<string, { old: string; new: string }>;
+
+const editable: Record<string, string[]> = {
+  ShipdayOrder: ["deliveryValue","orderNumber","customerName","customerAddress"],
+  BankTransaction: ["amount","description"], Movement: ["amount","description"],
+  BaseTransaction: ["amount","cashAmount","bankAmount","notes"],
+  DriverPayment: ["amount","notes"], ClientDebt: ["amount","description"],
+  ClientDebtPayment: [], Conversion: ["amount","notes"],
+  ShiftClose: ["totalExpected","totalCounted","bankExpected","bankCounted","receivedBy","handedBy","notes"],
+  MonthlyClose: ["initialCash","initialBank"],
+  HourlyShift: ["driverId","driverName","startTime","endTime","date"],
+};
+const numericFields = new Set(["amount","deliveryValue","cashAmount","bankAmount","totalExpected","totalCounted","bankExpected","bankCounted","initialCash","initialBank"]);
+function validateChanges(entity: string, changes: ChangeMap, deleting = false) {
+  if (!editable[entity]) throw badRequest("Tipo de registro no permitido");
+  if (deleting) return;
+  for (const [field, change] of Object.entries(changes)) {
+    if (!editable[entity].includes(field)) throw badRequest("Campo no editable: " + field);
+    if (typeof change.new !== "string") throw badRequest("Valor inválido");
+    if (numericFields.has(field)) {
+      const n = Number(change.new);
+      if (!change.new.trim() || !Number.isSafeInteger(n) || n > MAX_MONEY || n < 0 || (field === "amount" && n === 0)) throw badRequest("Monto inválido");
+    }
+  }
+}
+
 
 export async function listRequests(status?: "pending" | "approved" | "rejected") {
   return prisma.editRequest.findMany({
@@ -31,6 +60,7 @@ export async function createRequest(data: {
   reason: string;
   requestType?: "edit" | "delete";
 }) {
+  validateChanges(data.entityType,data.changes,data.requestType === "delete");
   if (!data.reason.trim()) throw badRequest("Debes indicar el motivo");
   const requestType = data.requestType ?? "edit";
   if (requestType === "edit" && Object.keys(data.changes).length === 0) {
@@ -53,6 +83,7 @@ export async function createRequest(data: {
 }
 
 export async function reviewRequest(id: string, reviewerId: string, action: "approved" | "rejected", notes?: string) {
+  return moneyTransaction(async () => {
   const req = await prisma.editRequest.findUnique({ where: { id } });
   if (!req) throw notFound("Solicitud no encontrada");
   if (req.status !== "pending") throw badRequest("Esta solicitud ya fue procesada");
@@ -86,6 +117,8 @@ export async function reviewRequest(id: string, reviewerId: string, action: "app
   });
 
   return updated;
+
+  });
 }
 
 // ── Eliminar entidad revirtiendo sus efectos en deudas/saldos ─────────────────
@@ -101,24 +134,16 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
         if (order.driverId && order.companyAmount > 0) {
           await applyDebtDelta(tx, order.driverId, -order.companyAmount);
         }
-        // Revertir stats diarias
-        if (order.driverId && order.deliveredAt) {
-          const dateStr = toBogotaDateStr(order.deliveredAt);
-          const stat = await tx.dailyDriverStat.findUnique({
-            where: { date_driverId: { date: dateStr, driverId: order.driverId } },
-          });
-          if (stat) {
-            await tx.dailyDriverStat.update({
-              where: { date_driverId: { date: dateStr, driverId: order.driverId } },
-              data: {
-                orderCount: { decrement: 1 },
-                totalValue: { decrement: order.deliveryValue },
-                companyTotal: { decrement: order.companyAmount },
-              },
-            });
-          }
+        const linked = await tx.clientDebt.findUnique({where:{sourceOrderId:order.id}});
+        if (linked) {
+          if ((linked.paidAmount ?? 0)>0 || await tx.clientDebtPayment.count({where:{debtId:linked.id}})) throw badRequest("Revierte los abonos del cliente antes de eliminar este pedido.");
+          await tx.client.update({where:{id:linked.clientId},data:{pendingDebt:{decrement:linked.amount}}});
+          await tx.clientDebt.delete({where:{id:linked.id}});
+        } else if (order.addToClientDebt) {
+          throw badRequest("Este pedido histórico no tiene su deuda enlazada. Requiere conciliación antes de eliminarlo.");
         }
         await tx.shipdayOrder.delete({ where: { id: entityId } });
+        await refreshOrderStats(tx,order);
         // Lápida: impide que el polling/webhook de Shipday resucite este pedido (sigue
         // reportándose como entregado allá). upsert, no create, por si alguna vez se
         // reintenta el borrado del mismo shipdayOrderId. Ver modelo DeletedShipdayOrder.
@@ -139,75 +164,16 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
     case "Movement":
       await prisma.movement.delete({ where: { id: entityId } });
       break;
-    case "BankTransaction": {
-      const bankTx = await prisma.bankTransaction.findUnique({ where: { id: entityId } });
-      if (!bankTx) break;
-      // Movimiento de un turno por hora: delegar al módulo por-hora, que borra el turno
-      // (egreso = pago al domi) o revierte el cobro (ingreso) y sincroniza la deuda del
-      // cliente. Así, borrar desde Movimientos también lo borra de Clientes por hora.
-      if (bankTx.hourlyShiftId) {
-        await deleteHourlyBankTx(entityId);
-        break;
-      }
-      await prisma.$transaction(async (tx) => {
-        // Si este movimiento redujo la deuda de un domiciliario, revertirla y limpiar
-        // los registros contables subsidiarios (BaseTransaction + DriverPayment
-        // bank-linked) que se crearon junto a este bankTransaction.
-        //
-        // La condición es debtApplied != 0 (marca explícita), NO (noCounterpart && type=="ingreso").
-        // Debe quedar SINCRONIZADO con bank-transaction.service.ts::remove(). Ver esa nota y schema.prisma.
-        //   debtApplied > 0 → ingreso que descontó deuda.  debtApplied < 0 → egreso que pagó crédito (payCredit).
-        if (bankTx.driverId && bankTx.debtApplied !== 0) {
-          // Revertir por POSICIÓN NETA (deuda − crédito): `net + debtApplied` restaura pendingDebt o
-          // creditAmount para AMBOS signos, sin dejar saldo fantasma ("la empresa le debe" que no
-          // desaparecía, o deuda que no volvía).
-          const drv = await tx.driver.findUnique({ where: { id: bankTx.driverId } });
-          if (drv) {
-            const net = (drv.pendingDebt - (drv.creditAmount ?? 0)) + bankTx.debtApplied;
-            await tx.driver.update({
-              where: { id: bankTx.driverId },
-              data: {
-                pendingDebt: net > 0 ? net : 0,
-                creditAmount: net < 0 ? -net : 0,
-                creditMedium: net < 0 ? drv.creditMedium : null,
-              },
-            });
-          }
-          // Registros contables subsidiarios SOLO existen para pagos-INGRESO (debtApplied > 0);
-          // payCredit (debtApplied < 0) no crea ninguno. Búsqueda por ID; respaldo por ventana ±5s
-          // solo para registros viejos sin enlace directo. Ver bank-transaction.service.ts::remove().
-          if (bankTx.debtApplied > 0) {
-            const window = { gte: new Date(bankTx.date.getTime() - 5000), lte: new Date(bankTx.date.getTime() + 5000) };
-            await tx.baseTransaction.deleteMany({
-              where: {
-                driverId: bankTx.driverId,
-                type: "pago",
-                notes: { startsWith: BANK_LINKED_BASE_PREFIX },
-                OR: [{ bankTransactionId: bankTx.id }, { bankTransactionId: null, date: window }],
-              },
-            });
-            await tx.driverPayment.deleteMany({
-              where: {
-                driverId: bankTx.driverId,
-                notes: { startsWith: BANK_LINKED_PAYMENT_NOTE },
-                OR: [{ bankTransactionId: bankTx.id }, { bankTransactionId: null, date: window }],
-              },
-            });
-          }
-        }
-        await tx.bankTransaction.delete({ where: { id: entityId } });
-      });
+    case "BankTransaction":
+      await bankSvc.remove(entityId);
       break;
-    }
     case "DriverPayment": {
       const payment = await prisma.driverPayment.findUnique({ where: { id: entityId } });
       if (!payment) return;
+      if (payment.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos.");
       await prisma.$transaction(async (tx) => {
         // El pago reducía la deuda → al eliminarlo, la deuda vuelve a subir
-        await tx.driver.update({
-          where: { id: payment.driverId },
-          data: { pendingDebt: { increment: payment.amount } },
-        });
+        await applyDebtDelta(tx,payment.driverId,payment.amount);
         await tx.driverPayment.delete({ where: { id: entityId } });
       });
       break;
@@ -215,6 +181,7 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
     case "BaseTransaction": {
       const base = await prisma.baseTransaction.findUnique({ where: { id: entityId } });
       if (!base) return;
+      if (base.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos.");
       await prisma.$transaction(async (tx) => {
         // Netear contra el crédito (applyDebtDelta) en vez de un increment/decrement
         // crudo: así borrar una base nunca deja pendingDebt negativo ni desincroniza el
@@ -229,6 +196,8 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
     case "ClientDebt": {
       const debt = await prisma.clientDebt.findUnique({ where: { id: entityId } });
       if (!debt) return;
+      if (debt.sourceOrderId) throw badRequest("Corrige el pedido que generó esta deuda.");
+      if ((debt.paidAmount ?? 0)>0 || await prisma.clientDebtPayment.count({where:{debtId:debt.id}})) throw badRequest("Revierte los abonos antes de eliminar esta deuda.");
       await prisma.$transaction(async (tx) => {
         // Restar del saldo del cliente SOLO lo que aún quedaba pendiente de esta deuda
         // (monto menos lo ya abonado). Si estaba 100% pagada, no resta nada. Antes se
@@ -245,35 +214,9 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
       });
       break;
     }
-    case "ClientDebtPayment": {
-      // Eliminar el COBRO de una deuda (registrado por error): NO borra la deuda, sino
-      // que revierte el pago. Lo abonado vuelve a quedar pendiente, se limpian los
-      // campos de pago y así el saldo esperado deja de contar ese ingreso y la deuda
-      // del cliente regresa a su valor real.
-      const debt = await prisma.clientDebt.findUnique({ where: { id: entityId } });
-      if (!debt) return;
-      const collected = debt.paidAmount ?? 0;
-      if (collected <= 0) return;
-      await prisma.$transaction(async (tx) => {
-        await tx.client.update({
-          where: { id: debt.clientId },
-          data: { pendingDebt: { increment: collected } },
-        });
-        await tx.clientDebt.update({
-          where: { id: entityId },
-          data: {
-            paid: false,
-            paidAt: null,
-            paidAmount: 0,
-            paidCash: 0,
-            paidBank: 0,
-            paidBy: null,
-            paidByName: null,
-          },
-        });
-      });
+    case "ClientDebtPayment":
+      await reverseClientPayment(entityId);
       break;
-    }
     case "Conversion":
       await prisma.conversion.delete({ where: { id: entityId } });
       break;
@@ -294,6 +237,7 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
 // ── Recalcular companyAmount de TODOS los pedidos según la comisión actual ────
 // Corrige descuadres heredados y ajusta la deuda de los domiciliarios.
 export async function recalcAllOrders() {
+  return moneyTransaction(async () => {
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
   const commissionPercent = settings?.shipdayCommission ?? 30;
   const orders = await prisma.shipdayOrder.findMany();
@@ -306,25 +250,26 @@ export async function recalcAllOrders() {
       await prisma.$transaction(async (tx) => {
         await tx.shipdayOrder.update({ where: { id: order.id }, data: { companyAmount: correct } });
         if (order.driverId && delta !== 0) {
-          await tx.driver.update({
-            where: { id: order.driverId },
-            data: { pendingDebt: { increment: delta } },
-          });
+          await applyDebtDelta(tx,order.driverId,delta);
+          await refreshOrderStats(tx,order);
         }
       });
       fixed++;
     }
   }
   return { total: orders.length, fixed };
+
+  });
 }
 
 async function applyChanges(entityType: string, entityId: string, changes: ChangeMap, reviewer?: { id: string; name: string | null }) {
-  // Extraer solo los valores nuevos como objeto, con tipos correctos
+  validateChanges(entityType,changes);
+  // Solo los campos monetarios se convierten a número; conservar números de pedido como texto.
   const newValues: Record<string, unknown> = {};
   for (const [field, val] of Object.entries(changes)) {
     const raw = val.new;
     const num = Number(raw);
-    newValues[field] = !isNaN(num) && raw.trim() !== "" ? num : raw;
+    newValues[field] = numericFields.has(field) ? num : raw;
   }
 
   switch (entityType) {
@@ -337,6 +282,9 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
         const totalExpected = (newValues.totalExpected as number) ?? sc.totalExpected;
         const totalCounted = (newValues.totalCounted as number) ?? sc.totalCounted;
         data.difference = totalCounted - totalExpected;
+        const bankCounted = (newValues.bankCounted as number | undefined) ?? sc.bankCounted;
+        const bankExpected = (newValues.bankExpected as number | undefined) ?? sc.bankExpected;
+        data.bankDifference = bankCounted == null ? null : bankCounted - (bankExpected ?? 0);
         data.editedBy = reviewer?.id ?? null;
         data.editedByName = reviewer?.name ?? null;
         data.editedAt = new Date();
@@ -350,7 +298,7 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
       break;
     }
     case "ShipdayOrder":
-      await applyShipdayOrderChange(entityId, newValues);
+      await applyShipdayOrderChange(entityId, newValues, reviewer);
       break;
     case "Movement":
       // El balance de caja se recalcula on-read desde los movimientos, así que solo actualizar
@@ -358,7 +306,7 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
       break;
     case "BankTransaction":
       // El balance de banco se recalcula on-read, solo actualizar
-      await prisma.bankTransaction.update({ where: { id: entityId }, data: newValues });
+      await bankSvc.edit(entityId, newValues);
       break;
     case "DriverPayment":
       await applyDriverPaymentChange(entityId, newValues);
@@ -388,58 +336,31 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
 }
 
 // ── ShipdayOrder: recalcular % empresa, deuda del driver y stats diarias ──────
-async function applyShipdayOrderChange(orderId: string, newValues: Record<string, unknown>) {
-  const order = await prisma.shipdayOrder.findUnique({ where: { id: orderId } });
-  if (!order) throw new Error("Pedido no encontrado");
-
-  const newDeliveryValue = newValues.deliveryValue != null ? Number(newValues.deliveryValue) : order.deliveryValue;
-
-  // Recalcular companyAmount con el % de comisión actual
-  const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
-  const commissionPercent = settings?.shipdayCommission ?? 30;
-  const newCompanyAmount = Math.round(newDeliveryValue * (commissionPercent / 100));
-
-  const deltaCompany = newCompanyAmount - order.companyAmount;
-  const deltaValue = newDeliveryValue - order.deliveryValue;
-
-  await prisma.$transaction(async (tx) => {
-    // Actualizar el pedido con el valor nuevo + companyAmount recalculado
-    await tx.shipdayOrder.update({
-      where: { id: orderId },
-      data: { ...newValues, deliveryValue: newDeliveryValue, companyAmount: newCompanyAmount },
-    });
-
-    if (order.driverId && deltaCompany !== 0) {
-      // Ajustar la deuda del domiciliario por la diferencia de comisión
-      await tx.driver.update({
-        where: { id: order.driverId },
-        data: { pendingDebt: { increment: deltaCompany } },
-      });
-    }
-
-    // Ajustar las estadísticas diarias del domiciliario
-    if (order.driverId && order.deliveredAt) {
-      const dateStr = order.deliveredAt.toISOString().slice(0, 10);
-      const stat = await tx.dailyDriverStat.findUnique({
-        where: { date_driverId: { date: dateStr, driverId: order.driverId } },
-      });
-      if (stat) {
-        await tx.dailyDriverStat.update({
-          where: { date_driverId: { date: dateStr, driverId: order.driverId } },
-          data: {
-            totalValue: { increment: deltaValue },
-            companyTotal: { increment: deltaCompany },
-          },
-        });
-      }
-    }
-  });
+async function applyShipdayOrderChange(orderId: string, newValues: Record<string, unknown>, reviewer?: {id:string;name:string|null}) {
+  const order = await prisma.shipdayOrder.findUnique({where:{id:orderId}});
+  if (!order) throw notFound("Pedido no encontrado");
+  const value = newValues.deliveryValue == null ? order.deliveryValue : Number(newValues.deliveryValue);
+  if (!Number.isSafeInteger(value) || value < 0) throw badRequest("Tarifa inválida");
+  const settings = await prisma.settings.findUnique({where:{id:"singleton"}});
+  const companyAmount = newValues.deliveryValue == null ? order.companyAmount : Math.round(value*(settings?.shipdayCommission ?? 30)/100);
+  const linked = await prisma.clientDebt.findUnique({where:{sourceOrderId:orderId}});
+  if (order.addToClientDebt && !linked && value !== order.deliveryValue) throw badRequest("La deuda de este pedido histórico requiere conciliación antes de editar su tarifa.");
+  if (linked && value < (linked.paidAmount ?? 0)) throw badRequest("Revierte los abonos que superan el nuevo valor antes de editar el pedido.");
+  await prisma.shipdayOrder.update({where:{id:orderId},data:{...newValues,deliveryValue:value,companyAmount,
+    ...(newValues.deliveryValue == null ? {} : {manualOverride:true,manualOriginalValue:order.manualOriginalValue ?? order.deliveryValue,manualOverrideBy:reviewer?.id ?? null,manualOverrideAt:new Date()})}});
+  if(order.driverId) await applyDebtDelta(prisma,order.driverId,companyAmount-order.companyAmount);
+  if(linked && value!==linked.amount){
+    await prisma.clientDebt.update({where:{id:linked.id},data:{amount:value,paid:(linked.paidAmount ?? 0)>=value}});
+    await prisma.client.update({where:{id:linked.clientId},data:{pendingDebt:{increment:value-linked.amount}}});
+  }
+  await refreshOrderStats(prisma,order);
 }
 
 // ── DriverPayment: ajustar deuda del driver por la diferencia ─────────────────
 async function applyDriverPaymentChange(paymentId: string, newValues: Record<string, unknown>) {
   const payment = await prisma.driverPayment.findUnique({ where: { id: paymentId } });
   if (!payment) throw new Error("Pago no encontrado");
+  if (payment.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos.");
 
   const newAmount = newValues.amount != null ? Number(newValues.amount) : payment.amount;
   const delta = newAmount - payment.amount;
@@ -448,10 +369,7 @@ async function applyDriverPaymentChange(paymentId: string, newValues: Record<str
     await tx.driverPayment.update({ where: { id: paymentId }, data: { ...newValues, amount: newAmount } });
     if (delta !== 0) {
       // Un pago mayor reduce más la deuda → pendingDebt -= delta
-      await tx.driver.update({
-        where: { id: payment.driverId },
-        data: { pendingDebt: { decrement: delta } },
-      });
+      await applyDebtDelta(tx,payment.driverId,-delta);
     }
   });
 }
@@ -460,6 +378,7 @@ async function applyDriverPaymentChange(paymentId: string, newValues: Record<str
 async function applyBaseTransactionChange(baseId: string, newValues: Record<string, unknown>) {
   const base = await prisma.baseTransaction.findUnique({ where: { id: baseId } });
   if (!base) throw new Error("Base no encontrada");
+  if (base.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos.");
 
   let newCash: number;
   let newBank: number;
@@ -492,6 +411,7 @@ async function applyBaseTransactionChange(baseId: string, newValues: Record<stri
     newAmount = base.amount;
   }
 
+  if (!Number.isSafeInteger(newAmount) || newAmount <= 0 || newCash < 0 || newBank < 0) throw badRequest("Monto inválido");
   const delta = newAmount - base.amount;
 
   await prisma.$transaction(async (tx) => {
@@ -499,30 +419,18 @@ async function applyBaseTransactionChange(baseId: string, newValues: Record<stri
     if (delta !== 0) {
       // entrega aumenta deuda, pago la reduce
       const sign = base.type === "entrega" ? 1 : -1;
-      await tx.driver.update({
-        where: { id: base.driverId },
-        data: { pendingDebt: { increment: sign * delta } },
-      });
+      await applyDebtDelta(tx,base.driverId,sign*delta);
     }
   });
 }
 
 // ── ClientDebt: ajustar pendingDebt del cliente por la diferencia ─────────────
 async function applyClientDebtChange(debtId: string, newValues: Record<string, unknown>) {
-  const debt = await prisma.clientDebt.findUnique({ where: { id: debtId } });
-  if (!debt) throw new Error("Deuda no encontrada");
-
-  const newAmount = newValues.amount != null ? Number(newValues.amount) : debt.amount;
-  const delta = newAmount - debt.amount;
-
-  await prisma.$transaction(async (tx) => {
-    await tx.clientDebt.update({ where: { id: debtId }, data: { ...newValues, amount: newAmount } });
-    // Solo afecta la deuda del cliente si la deuda sigue pendiente (no pagada)
-    if (delta !== 0 && !debt.paid) {
-      await tx.client.update({
-        where: { id: debt.clientId },
-        data: { pendingDebt: { increment: delta } },
-      });
-    }
-  });
+  const debt = await prisma.clientDebt.findUnique({where:{id:debtId}});
+  if (!debt) throw notFound("Deuda no encontrada");
+  if(debt.sourceOrderId) throw badRequest("Corrige el pedido que generó esta deuda.");
+  const amount = newValues.amount == null ? debt.amount : Number(newValues.amount);
+  if(!Number.isSafeInteger(amount) || amount <= 0 || amount < (debt.paidAmount ?? 0)) throw badRequest("El valor no puede ser inferior a lo ya cobrado.");
+  await prisma.clientDebt.update({where:{id:debtId},data:{...newValues,amount,paid:(debt.paidAmount ?? 0)>=amount}});
+  await prisma.client.update({where:{id:debt.clientId},data:{pendingDebt:{increment:amount-debt.amount}}});
 }

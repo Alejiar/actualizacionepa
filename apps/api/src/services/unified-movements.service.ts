@@ -76,8 +76,8 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       take: params?.limit ?? 300,
     }),
     // Cobros de deudas de clientes (total O parcial): basta con que tengan paidAt.
-    prisma.clientDebt.findMany({
-      where: dateWhere ? { paidAt: dateWhere } : { paidAt: { not: null } },
+    prisma.clientDebtPayment.findMany({
+      where: dateWhere ? { paidAt: dateWhere } : {},
       include: { client: { select: { name: true } } },
       orderBy: { paidAt: "desc" },
       take: params?.limit ?? 200,
@@ -242,13 +242,13 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       _sortKey: d.paidAt.toISOString(),
       type: "ingreso",
       medium: d.paidBank > 0 && d.paidCash === 0 ? "bank" : "cash",
-      amount: d.paidAmount ?? d.amount,
+      amount: d.paidAmount,
       description: `Cobro deuda: ${d.description} — ${d.client?.name ?? "cliente"}`,
       category: "Cobro cliente",
       source: "Clientes",
       relatedName: d.client?.name,
-      createdByName: d.paidByName ?? d.createdByName,
-      deviceName: d.paidDeviceName ?? d.deviceName,
+      createdByName: d.paidByName,
+      deviceName: d.paidDeviceName,
       // Tipo propio (no "ClientDebt"): al eliminar este movimiento se REVIERTE el
       // cobro y la deuda vuelve a su valor real, en vez de borrar la deuda entera.
       entityType: "ClientDebtPayment",

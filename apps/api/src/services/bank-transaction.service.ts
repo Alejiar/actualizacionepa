@@ -1,4 +1,5 @@
-import { prisma } from "../lib/prisma";
+import { applyDebtDelta, applyBankToDriver } from "./driver.service";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { bogotaOpenRange } from "../lib/date-range";
 import { badRequest } from "../lib/errors";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
@@ -35,6 +36,7 @@ export async function create(data: {
   // Marca explícita: este movimiento NO requiere contraparte (es independiente).
   noCounterpart?: boolean;
 }) {
+  return moneyTransaction(async () => {
   // Punto 4 — bloquear montos inválidos (0 o negativos) que falsean los saldos.
   const cashIn0 = Math.round(data.cashAmount ?? 0);
   const bankIn0 = Math.round(data.bankAmount ?? 0);
@@ -116,9 +118,12 @@ export async function create(data: {
   const medium = data.medium === "cash" ? "cash" : "bank";
   const amount = (cash + bank) || data.amount;
   return prisma.bankTransaction.create({ data: { ...base, medium, amount } });
+
+  });
 }
 
 export async function remove(id: string) {
+  return moneyTransaction(async () => {
   const original = await prisma.bankTransaction.findUnique({ where: { id } });
   if (!original) return;
   // Si el movimiento pertenece a un turno por hora, delegar al módulo por-hora: borra el
@@ -149,18 +154,7 @@ export async function remove(id: string) {
       if (row.driverId && row.debtApplied !== 0) {
         // Revertir por POSICIÓN NETA (deuda − crédito): `net + debtApplied` restaura pendingDebt o
         // creditAmount según corresponda, para AMBOS signos, sin dejar crédito/deuda fantasma.
-        const drv = await tx.driver.findUnique({ where: { id: row.driverId } });
-        if (drv) {
-          const net = (drv.pendingDebt - (drv.creditAmount ?? 0)) + row.debtApplied;
-          await tx.driver.update({
-            where: { id: row.driverId },
-            data: {
-              pendingDebt: net > 0 ? net : 0,
-              creditAmount: net < 0 ? -net : 0,
-              creditMedium: net < 0 ? drv.creditMedium : null,
-            },
-          });
-        }
+        await applyDebtDelta(tx, row.driverId, row.debtApplied);
         // Registros contables subsidiarios (base pago + driverPayment bank-linked) SOLO existen
         // para pagos-INGRESO (debtApplied > 0). payCredit (debtApplied < 0) no crea ninguno, así
         // que solo se limpian cuando debtApplied > 0 (y así la ventana ±5s no toca nada ajeno).
@@ -205,6 +199,8 @@ export async function remove(id: string) {
       });
     }
   });
+
+  });
 }
 
 export async function summary(from?: string, to?: string) {
@@ -227,4 +223,30 @@ export async function summary(from?: string, to?: string) {
   const ingresos = ingresosAgg._sum.amount ?? 0;
   const egresos = egresosAgg._sum.amount ?? 0;
   return { ingresos, egresos, balance: ingresos - egresos, count };
+}
+
+/** Corrige el movimiento y TODO su efecto de deuda, en la transacción común. */
+export async function edit(id: string, values: { amount?: number; description?: string }) {
+  return moneyTransaction(async () => {
+  const original = await prisma.bankTransaction.findUnique({where:{id}});
+  if (!original) throw badRequest("Movimiento no encontrado");
+  if (values.amount == null || values.amount === original.amount) {
+    return prisma.bankTransaction.update({where:{id},data:values});
+  }
+  if (!Number.isSafeInteger(values.amount) || values.amount <= 0) throw badRequest("Monto inválido");
+  if (original.hourlyShiftId) throw badRequest("Corrige el turno o revierte su cobro desde Clientes por hora.");
+  if (original.pairId || original.groupId) throw badRequest("Revierte el movimiento enlazado y regístralo de nuevo con el importe correcto.");
+  if (!original.driverId || !original.debtApplied) return prisma.bankTransaction.update({where:{id},data:values});
+  if (original.debtApplied < 0) {
+    await applyDebtDelta(prisma, original.driverId, values.amount-original.amount);
+    return prisma.bankTransaction.update({where:{id},data:{...values,debtApplied:-values.amount}});
+  }
+  await applyDebtDelta(prisma,original.driverId,original.debtApplied);
+  await prisma.baseTransaction.deleteMany({where:{bankTransactionId:id}});
+  await prisma.driverPayment.deleteMany({where:{bankTransactionId:id}});
+  await prisma.bankTransaction.update({where:{id},data:{...values,debtApplied:0}});
+  await applyBankToDriver(id,original.driverId);
+  return prisma.bankTransaction.update({where:{id},data:{description:values.description ?? original.description}});
+
+  });
 }

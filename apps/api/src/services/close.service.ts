@@ -1,4 +1,5 @@
-import { prisma } from "../lib/prisma";
+import { assertMoney } from "../lib/money-validation";
+import { prisma, moneyTransaction } from "../lib/prisma";
 import { conflict } from "../lib/errors";
 import { bogotaMonthRange as monthRange } from "../lib/date-range";
 import { reconcileBasePending } from "../lib/base-balance";
@@ -40,7 +41,7 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     prisma.bankTransaction.aggregate({ where: { type: "ingreso", date: range, driverId: null, noCounterpart: false, pairId: null }, _sum: { amount: true } }),
     prisma.bankTransaction.aggregate({ where: { type: "egreso", date: range, driverId: null, noCounterpart: false, pairId: null }, _sum: { amount: true } }),
     prisma.clientDebt.aggregate({ where: { createdAt: range }, _sum: { amount: true } }),
-    prisma.clientDebt.aggregate({ where: { paidAt: range }, _sum: { paidAmount: true } }),
+    prisma.clientDebtPayment.aggregate({ where: { paidAt: range }, _sum: { paidAmount: true } }),
     // Saldo de BASE por domiciliario (entrega − pago), NO la deuda total (que incluye comisiones de domicilios)
     prisma.baseTransaction.groupBy({
       by: ["driverId", "type"],
@@ -116,8 +117,16 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     .map(d => ({ id: d.id, name: d.name, pendingDebt: d.pendingDebt - Math.max(0, baseBalanceByDriver.get(d.id) ?? 0) }))
     .filter(d => d.pendingDebt > 0)
     .sort((a, b) => b.pendingDebt - a.pendingDebt)
-    .slice(0, 20);
+    ;
   const commissionPending = pendingCommissionDrivers.reduce((s, d) => s + d.pendingDebt, 0);
+  const totalDriverDebt = driversWithDebt.reduce((s,d) => s+d.pendingDebt,0);
+  // Por driver: bases del mes aplicables, remanente histórico y comisión viva.
+  const monthlyLiveBase = [...baseBalanceByDriver.entries()].reduce((sum,[id,ledger]) => {
+    const all = reconcileBasePending(ledger,netDebtById.get(id) ?? 0);
+    return sum+Math.min(all,reconcileBasePending(monthBaseByDriver.get(id) ?? 0,netDebtById.get(id) ?? 0));
+  },0);
+  const debtReconciliation = { total:totalDriverDebt, basesCurrentMonth:monthlyLiveBase,
+    basesPrevious:basePendingAllTime-monthlyLiveBase, basesAllTime:basePendingAllTime, commission:commissionPending };
 
   const gastosEf = gastosEfAgg._sum.amount ?? 0;
   const gastosBk = gastosBkAgg._sum.amount ?? 0;
@@ -165,6 +174,7 @@ export async function getMonthlyReport(month: string, branchId?: string) {
 
   return {
     month,
+    debtReconciliation,
     totalSales,
     expenses: { cash: gastosEf, bank: gastosBk, total: totalExpenses },
     payroll: { cash: nominaEf, bank: nominaBk, total: totalPayroll },
@@ -260,6 +270,9 @@ export async function getMonthCloseProjection(
 }
 
 export async function closeMonth(month: string, branchId?: string, initialCash?: number, initialBank?: number, actor?: { id?: string | null; name?: string | null }) {
+  if (initialCash !== undefined) assertMoney(initialCash, true);
+  if (initialBank !== undefined) assertMoney(initialBank, true);
+  return moneyTransaction(async () => {
   // findFirst (no findUnique): la clave compuesta no admite branchId null en findUnique.
   const existing = await prisma.monthlyClose.findFirst({
     where: { month, branchId: branchId ?? null },
@@ -362,6 +375,8 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
       closedBy: actor?.id ?? null,
       closedByName: actor?.name ?? null,
     },
+  });
+
   });
 }
 

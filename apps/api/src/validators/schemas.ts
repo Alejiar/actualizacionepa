@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { MAX_MONEY } from "../lib/money-validation";
+export const positiveMoney = z.number().int().positive().max(MAX_MONEY);
+export const nonnegativeMoney = z.number().int().min(0).max(MAX_MONEY);
 
 const categoryCodes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18] as const;
 
@@ -24,7 +27,7 @@ export const createMovementSchema = z.object({
   ),
   type: z.enum(["ingreso", "egreso"]),
   medium: z.enum(["cash", "bank"]),
-  amount: z.number().int(),
+  amount: positiveMoney,
   workerId: z.string().nullish(),
   description: z.string().nullish(),
   status: z.enum(["pending", "confirmed"]).optional(),
@@ -53,8 +56,8 @@ export const updateSettingsSchema = z.object({
   brandName: z.string().optional(),
   logoData: z.string().nullable().optional(),
   termsAcceptedAt: z.string().nullable().optional(),
-  initialCash: z.number().int().optional(),
-  initialBank: z.number().int().optional(),
+  initialCash: nonnegativeMoney.optional(),
+  initialBank: nonnegativeMoney.optional(),
   setupComplete: z.boolean().optional(),
   commissionPercent: z.number().optional(),
 });
