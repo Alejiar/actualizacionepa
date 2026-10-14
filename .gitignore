@@ -57,3 +57,5 @@ backups/
 apps/api/tests/results-m34/
 apps/api/tests/*.xlsx
 DEMO_CREDENCIALES.local
+apps/api/tests/conciliacion-demo.md
+apps/api/tests/results-m34/

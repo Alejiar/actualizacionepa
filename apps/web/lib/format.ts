@@ -26,8 +26,9 @@ export function todayBogota(): string {
 }
 
 export function shiftDate(iso: string, days: number): string {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + days);
+  // Mediodía UTC + aritmética UTC: el resultado no depende de la zona horaria del equipo.
+  const d = new Date(iso + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
 

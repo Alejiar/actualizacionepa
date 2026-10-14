@@ -74,6 +74,14 @@ async function closeDay() {
 }
 const income = (amount = 10000) => bank.create({ type: "ingreso", medium: "bank", amount, description: "Ingreso ficticio", noCounterpart: true });
 const shiftInput = (date = today) => ({ date, driverId: driver.id, startTime: "08:00", endTime: "09:00", medium: "cash" as const });
+// D7 (decisión del dueño 14-oct-2026): con el mes abierto, una solicitud aprobada SÍ corrige un
+// día cerrado (y queda registrada en su Cierre); `request` conserva la regla para lo que sigue
+// bloqueado (el propio Cierre, meses cerrados).
+async function approve(entity: string, id: string, changes: any, type: "edit" | "delete" = "edit") {
+  const r = await edits.createRequest({ requesterId: user.id, entityType: entity, entityId: id, entityLabel: entity, reason: "Ensayo ficticio", requestType: type, changes });
+  await edits.reviewRequest(r.id, admin.id, "approved");
+  assert.equal((await p.editRequest.findUniqueOrThrow({ where: { id: r.id } })).status, "approved");
+}
 async function request(entity: string, id: string, changes: any, type: "edit" | "delete" = "edit") {
   const r = await edits.createRequest({ requesterId: user.id, entityType: entity, entityId: id, entityLabel: entity, reason: "Ensayo ficticio", requestType: type, changes });
   await assert.rejects(() => edits.reviewRequest(r.id, admin.id, "approved"), code(409));
@@ -198,23 +206,29 @@ async function main() {
       assert.equal((await p.bankTransaction.findUniqueOrThrow({ where: { id: (b as any).id } })).amount, 10000);
       assert.equal(await p.shiftClose.count(), 1); assert.equal(await p.hourlyShift.count(), 1);
     });
-    await check("LOCK11", "Solicitudes de base/deuda/conversión/pago/cierres conservan pendiente", async () => {
+    await check("LOCK11", "D7: solicitudes aprobadas sobre un día cerrado (mes abierto) se aplican y se registran; el Cierre conserva su conteo", async () => {
       const b = await bases.giveBase(driver.id, { cashAmount: 10000 }); const d = await clients.addDebt(client.id, "Deuda", 10000);
       const c = await conversions.createConversion({ branchId: branch.id, amount: 1000, type: "efectivo_a_banco" });
       const pay = await p.driverPayment.create({ data: { driverId: driver.id, branchId: branch.id, amount: 1000, medium: "bank" } });
       const close = await closeDay();
       for (const [entity, id] of [["BaseTransaction", b.id], ["ClientDebt", d.id], ["Conversion", c.id], ["DriverPayment", pay.id]]) {
-        await request(entity, id, { amount: { old: "1000", new: "2000" } }); await request(entity, id, {}, "delete");
+        await approve(entity, id, { amount: { old: "1000", new: "2000" } }); await approve(entity, id, {}, "delete");
       }
       await request("ShiftClose", close.id, { totalExpected: { old: "100000", new: "200000" } }); await request("ShiftClose", close.id, {}, "delete");
+      const sc = await p.shiftClose.findUniqueOrThrow({ where: { id: close.id } });
+      assert.deepEqual([sc.totalExpected, sc.totalCounted, sc.difference], [close.totalExpected, close.totalCounted, close.difference]);
+      assert.ok((sc.corrections as any[]).length > 0);
+      const s = await days.getDaySummary(today); assert.equal(s.initialTotal + s.ingresos - s.egresos, s.finalTotal);
     });
-    await check("LOCK12", "Rutas HTTP de ingreso, egreso, nómina, pedido y webhook cerrado", async () => {
+    await check("LOCK12", "Rutas HTTP de ingreso, egreso, nómina y pedido manual cerrados; webhook posterior al Cierre carga el pedido", async () => {
       await closeDay();
       for (const [route, input] of [["/movements", { date: today, category: 1, type: "ingreso", medium: "cash", amount: 1000 }], ["/movements", { date: today, category: 5, type: "egreso", medium: "cash", amount: 1000 }], ["/sd/orders/manual", { branchId: branch.id, driverId: driver.id, deliveryValue: 10000 }]]) {
         assert.equal((await api(route as string, "POST", input)).status, 409);
       }
       const hook = await fetch(origin + "/api/webhooks/shipday/" + branch.id, { method: "POST", headers: { token: "independent-test-token", "Content-Type": "application/json" }, body: JSON.stringify({ event: "ORDER_COMPLETED", order: { id: "closed", delivery_fee: 10000, delivery_time: Date.now() }, carrier: { id: "def-driver" } }) });
-      assert.equal(hook.status, 409); assert.equal(await p.shipdayOrder.count(), 0); assert.equal(await p.movement.count(), 0);
+      // Decisión del dueño (14-oct-2026): un pedido entregado tras el Cierre se carga en su día
+      // (no mueve caja); el dinero (movimientos, pedido manual) sigue rechazado.
+      assert.equal(hook.status, 200); assert.equal(await p.shipdayOrder.count(), 1); assert.equal(await p.movement.count(), 0);
     });
     await check("LOCK13", "Gasto pendiente se puede rechazar; aprobarlo tras cierre no cambia caja", async () => {
       const expense = await api("/movements", "POST", { date: today, category: 3, type: "egreso", medium: "cash", amount: 1000 });
@@ -245,7 +259,7 @@ async function main() {
       await request("MonthlyClose", close.id, { initialCash: { old: "100000", new: "1" } });
       assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), { cash: 100000, bank: 101000 });
     });
-    await check("LOCK17", "Sondeo simulado no sana/importa entregas de día cerrado", async () => {
+    await check("LOCK17", "Sondeo simulado carga en su día una entrega posterior al Cierre", async () => {
       await closeDay();
       globalThis.fetch = (async (input: any, init: any) => {
         const u = String(input); if (u.startsWith("http://127.0.0.1:")) return realFetch(input, init);
@@ -255,7 +269,7 @@ async function main() {
       }) as any;
       // Claude (auditoría final): el pedido cerrado se omite y se reporta en lugar de abortar
       // el ciclo completo (abortar impedía cargar los pedidos abiertos de la misma ventana).
-      try { const r = await branches.syncBranch(branch.id, { forceDrivers: true }); assert.equal(r.partial, true); assert.match(r.error!, /late-poll/); assert.equal(await p.shipdayOrder.count(), 0); }
+      try { const r = await branches.syncBranch(branch.id, { forceDrivers: true }); assert.equal(r.partial, false); assert.equal(await p.shipdayOrder.count(), 1); }
       finally { globalThis.fetch = (async (input: any, init: any) => { if (!String(input).startsWith("http://127.0.0.1:")) throw Error("Red bloqueada"); return realFetch(input, init); }) as any; }
     });
     await check("LOCK18", "Cierre de sucursal bloquea solo su mes; nuevas operaciones abiertas siguen válidas", async () => {
@@ -266,14 +280,16 @@ async function main() {
       await request("BaseTransaction", b.id, { amount: { old: "10000", new: "20000" } });
       await bases.giveBase(driver.id, { cashAmount: 1000 }); assert.equal(await p.baseTransaction.count(), 2);
     });
-    await check("LOCK19", "Webhook mixto con entrega cerrada revierte el lote; duplicado cerrado es idempotente", async () => {
+    await check("LOCK19", "Webhook: entrega de un día cerrado se carga; lote con una de un MES cerrado se revierte; duplicado idempotente", async () => {
       const prev = new Date(today + "T12:00:00-05:00"); prev.setUTCDate(prev.getUTCDate() - 1);
       await p.shiftClose.create({ data: { date: toBogotaDateStr(prev), shift: "close", totalExpected: 100000, totalCounted: 100000, difference: 0, denominations: {} } });
       const event = (id: string, at: Date) => ({ event: "ORDER_COMPLETED", order: { id, delivery_fee: 10000, delivery_time: at.getTime() }, carrier: { id: "def-driver" } });
       const hook = (body: any) => fetch(origin + "/api/webhooks/shipday/" + branch.id, { method: "POST", headers: { token: "independent-test-token", "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      assert.equal((await hook([event("open-first", new Date()), event("closed-second", prev)])).status, 409); assert.equal(await p.shipdayOrder.count(), 0);
-      assert.equal((await hook(event("valid", new Date()))).status, 200); await closeDay();
-      assert.equal((await hook(event("valid", new Date()))).status, 200); assert.equal(await p.shipdayOrder.count(), 1);
+      assert.equal((await hook([event("open-first", new Date()), event("closed-day", prev)])).status, 200); assert.equal(await p.shipdayOrder.count(), 2);
+      const prevMonth = new Date(month + "-01T12:00:00-05:00"); prevMonth.setUTCDate(0);
+      await closes.closeMonth(toBogotaDateStr(prevMonth).slice(0, 7), undefined, 100000, 100000);
+      assert.equal((await hook([event("open-second", new Date()), event("closed-month", prevMonth)])).status, 409); assert.equal(await p.shipdayOrder.count(), 2);
+      assert.equal((await hook(event("open-first", new Date()))).status, 200); assert.equal(await p.shipdayOrder.count(), 2);
     });
     await check("INPUT05", "Abono cliente con medio desconocido no se reclasifica como efectivo", async () => {
       await clients.addDebt(client.id, "Deuda", 10000);
@@ -319,7 +335,8 @@ async function main() {
       assert.equal((await api("/sd/orders/manual", "POST", { branchId: branch.id, driverId: driver.id, deliveryValue: 10000, orderNumber: "FICTICIO-1" })).status, 201);
       assert.equal((await api("/sd/bases/" + driver.id + "/give", "POST", { cashAmount: 20000, bankAmount: 5000 })).status, 201);
       assert.equal((await api("/sd/bases/" + driver.id + "/pay", "POST", { cashAmount: 5000 })).status, 201);
-      assert.equal((await api("/sd/drivers/" + driver.id + "/payment", "POST", { amount: 8000, medium: "bank" })).status, 201);
+      // F14: el operador reparte el pago (antes la asignación automática iba primero a base).
+      assert.equal((await api("/sd/drivers/" + driver.id + "/payment", "POST", { amount: 8000, medium: "bank", baseAmount: 8000 })).status, 201);
       await clients.addDebt(client.id, "Préstamo", 20000, undefined, undefined, "cash");
       await clients.registerClientPayment(client.id, 7000, false, "bank");
       assert.equal((await api("/hourly-clients/" + hc.id + "/shifts", "POST", shiftInput())).status, 201);
@@ -327,7 +344,7 @@ async function main() {
       const a = await api("/bank-transactions", "POST", { type: "egreso", cashAmount: 2000, bankAmount: 3000, amount: 5000, description: "Mixto" });
       assert.equal((await api("/bank-transactions", "POST", { type: "ingreso", medium: "cash", amount: 5000, description: "Retorno", pairWith: a.body.parts[0].id })).status, 201);
       assert.equal((await api("/movements", "POST", { date: today, category: 5, type: "egreso", medium: "cash", amount: 2000 })).status, 201);
-      await drivers.registerPayment(driver.id, 18000, "cash"); await drivers.payCredit(driver.id, "bank");
+      await drivers.registerPayment(driver.id, 18000, "cash", undefined, undefined, 12000); await drivers.payCredit(driver.id, "bank");
       // 100000 -10000 -5000 -20000 +5000 -20000 -12000 +4000 -2000 +5000 -2000 +18000 = 61000.
       // 100000 +30000 +5000 -5000 +8000 +7000 -3000 -3000 = 139000.
       const expected = { cash: 61000, bank: 139000 };
@@ -341,16 +358,22 @@ async function main() {
       assert.equal((await api("/settings", "PATCH", { initialCash: 1 }, user)).status, 403);
       const close = await closeDay(); assert.equal(close.totalExpected, 61000); assert.equal(close.bankExpected, 139000); assert.equal(close.difference, 0); assert.equal(close.bankDifference, 0);
       assert.equal((await api("/movements/" + expense.body.id, "DELETE", undefined, admin)).status, 400); // ruta de gastos exige solicitud
-      await request("Movement", expense.body.id, { amount: { old: "10000", new: "1" } });
+      // D7: la corrección aprobada del gasto del día cerrado se aplica (+9.999 en efectivo) y
+      // queda registrada; el conteo original del Cierre (61.000/139.000) no cambia.
+      await approve("Movement", expense.body.id, { amount: { old: "10000", new: "1" } });
+      const corrected = { cash: expected.cash + 9999, bank: expected.bank };
+      const sc = await p.shiftClose.findFirstOrThrow({ where: { date: today, shift: "close" } });
+      assert.deepEqual([sc.totalExpected, sc.bankExpected, sc.difference], [61000, 139000, 0]);
+      assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), corrected);
       const previous = new Date(month + "-01T12:00:00-05:00"); previous.setUTCDate(0);
       await closes.closeMonth(toBogotaDateStr(previous).slice(0, 7), undefined, 100000, 100000);
-      assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), expected);
+      assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), corrected);
       const next = (await api("/shifts/current-date")).body.date;
       assert.equal((await api("/movements", "POST", { date: next, category: 1, type: "ingreso", medium: "cash", amount: 2000 })).status, 201);
       assert.deepEqual(await dashboard.getExpectedBalancesForDate(next), { cash: 102000, bank: 100000 });
       await stop(); await p.$disconnect(); await start();
       assert.equal((await api("/auth/login", "POST", { email: user.email, password: "Ficticio-Only-2026" }, null)).status, 200);
-      assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), expected);
+      assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), corrected);
       assert.equal((await p.client.findUniqueOrThrow({ where: { id: client.id } })).pendingDebt, 13000);
       assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 16000);
       assert.equal(await p.monthlyClose.count(), 1); assert.equal(await p.shiftClose.count(), 1); await excelTransfer(0);

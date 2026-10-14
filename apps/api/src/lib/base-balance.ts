@@ -1,21 +1,47 @@
+import type { Prisma, PrismaClient } from "@prisma/client";
+
 /**
- * FUENTE ÚNICA para "cuánta base debe un domiciliario".
+ * F14 (decisión del dueño, 14-oct-2026): la BASE y la deuda por COMISIONES son cuentas
+ * INDEPENDIENTES que no se compensan entre sí.
  *
- * El saldo del libro de base (`Σ BaseTransaction.entrega − Σ pago`) es un registro
- * PARALELO que puede quedar POR ENCIMA de la deuda neta real del domiciliario: los
- * pagos se reparten entre base y comisión y la deuda tiene piso en 0, así que un
- * domiciliario ya saldado (deuda neta 0) puede conservar un residuo en ese libro.
- * Ese residuo es DERIVA, no base realmente prestada.
+ *   Base pendiente      = Σ bases entregadas − Σ bases devueltas   (libro BaseTransaction)
+ *   Deuda por comisión  = Driver.pendingDebt   /  crédito a favor = Driver.creditAmount
+ *   Total informativo   = base pendiente + deuda por comisión − crédito  (NO es otra deuda)
  *
- * La verdad única del sistema es la posición neta (`Driver.pendingDebt`). Por eso la
- * base pendiente que se MUESTRA en cualquier módulo (Bases, Reportes, Excel, estado de
- * cuenta) debe ser `min(saldoLibro, deudaNeta)` acotado a ≥ 0: quien no debe nada NO
- * debe base. Todos los módulos usan ESTA función para no volver a desincronizarse.
- *
- * El clamp solo puede REDUCIR la base mostrada, nunca inflarla: entregar base sube la
- * deuda neta al instante (applyDebtDelta), así que la deuda neta siempre cubre la base
- * realmente prestada.
+ * Antes la base se sumaba a `pendingDebt` (un único saldo neto) y la base mostrada se
+ * "conciliaba" con min(libro, deuda neta): un crédito por comisiones ocultaba la base y un
+ * pago iba primero a base. Ahora la base solo cambia con entregas y devoluciones (incluida
+ * la parte de un pago que el operador asigna EXPLÍCITAMENTE a base).
  */
-export function reconcileBasePending(ledgerBase: number, pendingDebt: number): number {
-  return Math.max(0, Math.min(ledgerBase, pendingDebt));
+export function basePendingFrom(given: number, returned: number): number {
+  return Math.max(0, given - returned);
+}
+
+type Db = PrismaClient | Prisma.TransactionClient;
+
+/** Libro de base de un domiciliario (opcionalmente hasta un instante, exclusivo). */
+export async function getBaseLedger(db: Db, driverId: string, before?: Date) {
+  const dateWhere = before ? { date: { lt: before } } : {};
+  const rows = await db.baseTransaction.groupBy({ by: ["type"], where: { driverId, ...dateWhere }, _sum: { amount: true } });
+  const given = rows.find(r => r.type === "entrega")?._sum.amount ?? 0;
+  const returned = rows.find(r => r.type === "pago")?._sum.amount ?? 0;
+  return { given, returned, pending: basePendingFrom(given, returned) };
+}
+
+/** Base pendiente por domiciliario (todos o los indicados), opcionalmente hasta un instante. */
+export async function basePendingByDriver(db: Db, opts: { driverIds?: string[]; before?: Date; branchId?: string } = {}) {
+  const rows = await db.baseTransaction.groupBy({
+    by: ["driverId", "type"],
+    where: {
+      ...(opts.driverIds ? { driverId: { in: opts.driverIds } } : {}),
+      ...(opts.before ? { date: { lt: opts.before } } : {}),
+      ...(opts.branchId ? { branchId: opts.branchId } : {}),
+    },
+    _sum: { amount: true },
+  });
+  const raw = new Map<string, number>();
+  for (const r of rows) raw.set(r.driverId, (raw.get(r.driverId) ?? 0) + (r.type === "entrega" ? 1 : -1) * (r._sum.amount ?? 0));
+  const out = new Map<string, number>();
+  for (const [id, v] of raw) out.set(id, Math.max(0, v));
+  return out;
 }

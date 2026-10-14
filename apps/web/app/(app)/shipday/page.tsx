@@ -92,7 +92,7 @@ export default function DashboardPage() {
           <MetricCard icon="📦" label="Pedidos" value={String(today.orders)} sub={isToday ? "entregados hoy" : "entregados ese día"} />
           <MetricCard icon="💰" label="Valor total" value={formatCOP(today.value)} sub={isToday ? "domicilios hoy" : "domicilios ese día"} />
           <MetricCard icon="🏢" label="% empresa" value={formatCOP(today.company)} sub={isToday ? "comisiones hoy" : "comisiones ese día"} accent />
-          <MetricCard icon="⚠️" label="Deuda activa" value={formatCOP(debts.totalAmount)} sub={`${debts.driverCount} domiciliarios`} warn={debts.totalAmount > 0} />
+          <MetricCard icon="⚠️" label="Deuda comisiones" value={formatCOP(debts.totalAmount)} sub={`${debts.driverCount} dom. · base sin devolver ${formatCOP(debts.basesPending ?? 0)}`} warn={debts.totalAmount > 0} />
         </div>
       </section>
 
@@ -209,7 +209,8 @@ export default function DashboardPage() {
                   <Link href="/shipday/domiciliarios" className="text-xs text-primary font-bold hover:underline">Ver todos →</Link>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Total adeudado: <span className="font-black text-red-500">{formatCOP(debts.totalAmount)}</span>
+                  Comisiones: <span className="font-black text-red-500">{formatCOP(debts.totalAmount)}</span>
+                  {" · "}Base sin devolver: <span className="font-black text-amber-600">{formatCOP(debts.basesPending ?? 0)}</span>
                 </p>
                 <Link href="/shipday/domiciliarios" className="mt-3 flex items-center gap-2 text-xs font-bold text-primary hover:underline">
                   <Truck className="h-3.5 w-3.5" /> Ir a Domiciliarios para cobrar

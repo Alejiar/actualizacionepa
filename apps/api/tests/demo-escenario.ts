@@ -78,6 +78,8 @@ async function main() {
   const A = await p.driver.create({ data: { name: "Domiciliario Demo A", shipdayDriverId: "demo-a", branchId: branch.id } });
   const B = await p.driver.create({ data: { name: "Domiciliario Demo B", shipdayDriverId: "demo-b", branchId: branch.id } });
   debt[A.id] = 0; debt[B.id] = 0;
+  // F14 (14-oct-2026): la base es una cuenta aparte de la deuda por comisiones.
+  const base: Record<string, number> = { [A.id]: 0, [B.id]: 0 };
 
   // 2. Pedidos manuales: comisión 30 % → deuda del domiciliario (no mueve caja ni banco)
   for (const [num, d, v] of [["D1", A, 10000], ["D2", A, 8000], ["D3", B, 12000]] as const) {
@@ -89,10 +91,11 @@ async function main() {
   await expectBalances("Pedidos");
 
   // 3. Base entregada a A (efectivo) y devolución parcial
-  await ok(`/sd/bases/${A.id}/give`, "POST", { cashAmount: 20000 }, oper); debt[A.id] += 20000; step("3 Base entregada a A (efectivo)", -20000, 0);
-  await ok(`/sd/bases/${A.id}/pay`, "POST", { cashAmount: 5000 }, oper); debt[A.id] -= 5000; step("3 Base devuelta por A (efectivo)", 5000, 0);
+  await ok(`/sd/bases/${A.id}/give`, "POST", { cashAmount: 20000 }, oper); base[A.id] += 20000; step("3 Base entregada a A (efectivo)", -20000, 0);
+  await ok(`/sd/bases/${A.id}/pay`, "POST", { cashAmount: 5000 }, oper); base[A.id] -= 5000; step("3 Base devuelta por A (efectivo)", 5000, 0);
   // 4. Pago de A por banco
-  await ok(`/sd/drivers/${A.id}/payment`, "POST", { amount: 5400, medium: "bank" }, oper); debt[A.id] -= 5400; step("4 Pago de A (banco)", 0, 5400);
+  // F14: el operador asigna el pago a comisión (D1 3.000 + D2 2.400); la base de 15.000 sigue pendiente.
+  await ok(`/sd/drivers/${A.id}/payment`, "POST", { amount: 5400, medium: "bank", baseAmount: 0 }, oper); debt[A.id] -= 5400; step("4 Pago de A (banco) a comisión", 0, 5400);
   await expectBalances("Bases y pago");
   // 5. Ingreso bancario sin contraparte
   await ok("/bank-transactions", "POST", { type: "ingreso", medium: "bank", amount: 30000, description: "Ingreso bancario DEMO", noCounterpart: true }, oper); step("5 Ingreso bancario", 0, 30000);
@@ -124,21 +127,22 @@ async function main() {
   const facts: Record<string, unknown> = {};
   for (const d of [A, B]) {
     const row = await p.driver.findUniqueOrThrow({ where: { id: d.id } });
-    facts["deuda " + d.name] = row.pendingDebt; assert.equal(row.pendingDebt, debt[d.id], "deuda " + d.name); assert.equal(row.creditAmount, 0);
+    facts["comision " + d.name] = row.pendingDebt; assert.equal(row.pendingDebt, debt[d.id], "comisión " + d.name); assert.equal(row.creditAmount, 0);
+    const det = await ok(`/sd/drivers/${d.id}`, "GET", undefined, admin); facts["base " + d.name] = det.basePending; assert.equal(det.basePending, base[d.id], "base " + d.name);
   }
-  assert.equal(debt[A.id], 15000); assert.equal(debt[B.id], 0);
+  assert.deepEqual([debt[A.id], base[A.id], debt[B.id], base[B.id]], [0, 15000, 0, 0]);
   assert.equal((await p.client.findUniqueOrThrow({ where: { id: cli.id } })).pendingDebt, 15000);
   assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 0);
   const rep = (await ok(`/sd/report/${month}`, "GET", undefined, admin));
   facts.reporte = { totalSales: rep.totalSales, expenses: rep.expenses, payroll: rep.payroll, netProfit: rep.netProfit, bases: { given: rep.bases.given, returned: rep.bases.returned, diff: rep.bases.diff }, commission: rep.commission.pending, transfers: rep.transfers.diff, clientDebt: rep.clientDebt };
-  // Cálculo independiente. Regla vigente del pago de un domiciliario: primero a base, el resto a
-  // comisión. A: bases 20.000 − 5.000 devueltos − 5.400 de su pago = 9.600 de base pendiente;
-  // comisión pendiente = deuda 15.000 − 9.600 = 5.400 (D1 3.000 + D2 2.400). B: 0.
+  // Cálculo independiente (F14): base del mes = saldo anterior 0 + entregadas 20.000 − devueltas
+  // 5.000 = 15.000; comisión pendiente = 9.000 − 5.400 (A) − 3.600 (B) = 0.
   assert.equal(rep.totalSales, 9000, "comisión empresa = 30 % de 30.000");
   assert.deepEqual([rep.expenses.cash, rep.expenses.bank, rep.expenses.total], [10000, 0, 10000]);
   assert.equal(rep.payroll.total, 0);
   assert.equal(rep.netProfit, 9000 - 10000, "utilidad = ventas − gastos − nómina (regla vigente; por hora no entra: decisión pendiente)");
-  assert.equal(rep.bases.diff, 9600); assert.equal(rep.commission.pending, 5400);
+  assert.deepEqual([rep.bases.previous, rep.bases.given, rep.bases.returned, rep.bases.diff], [0, 20000, 5000, 15000]);
+  assert.equal(rep.commission.pending, 0); assert.equal(rep.debtReconciliation.total, 15000);
   assert.equal(rep.transfers.diff, 0, "la transferencia con contraparte debe cuadrar");
   assert.deepEqual([rep.clientDebt.normal, rep.clientDebt.hourly, rep.clientDebt.balance], [15000, 0, 15000]);
   const orders = await p.shipdayOrder.findMany({ select: { deliveryValue: true, companyAmount: true } });
@@ -169,7 +173,7 @@ async function main() {
     assert.deepEqual(await ok(`/shifts/${today}/expected`, "GET", undefined, admin).then((r: any) => [r.cash ?? r.expectedCash, r.bank ?? r.expectedBank]), [L.cash, L.bank]);
   }
 
-  const out2 = { fecha: today, libro: log, saldoFinal: { ...L }, deudas: { A: debt[A.id], B: debt[B.id], cliente: 15000, porHora: 0 }, facts };
+  const out2 = { fecha: today, libro: log, saldoFinal: { ...L }, deudas: { comisionA: debt[A.id], baseA: base[A.id], comisionB: debt[B.id], baseB: base[B.id], cliente: 15000, porHora: 0 }, facts };
   fs.writeFileSync(path.join(__dirname, `demo-escenario-${db.pathname.slice(1)}.json`), JSON.stringify(out2, null, 2));
   console.log(JSON.stringify({ ok: true, saldoFinal: L, deudas: out2.deudas, reporte: facts.reporte }, null, 1));
   await p.$disconnect();

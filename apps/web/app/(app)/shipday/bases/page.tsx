@@ -114,26 +114,15 @@ export default function BasesPage() {
     else { g.paid += b.amount; g.paidCash += cash; g.paidBank += bank; }
     groupMap.set(b.driverId, g);
   }
-  // ESTADO de base por domiciliario = base pendiente CONCILIADA con su deuda neta, calculada en
-  // el backend (listDrivers.basePending, FUENTE ÚNICA — ver apps/api/src/lib/base-balance.ts).
-  // NO se usa el saldo entrega−pago del día: ese libro es un registro paralelo que puede quedar
-  // por encima de lo que el domiciliario realmente debe (parte de un pago se aplica a comisión y
-  // la deuda tiene piso en 0). Un domiciliario ya saldado (deuda neta 0) NO debe base. Así el
-  // estado en Bases coincide SIEMPRE con Deudas, Domiciliarios y Reportes.
+  // F14 (14-oct-2026): ESTADO de base por domiciliario = base sin devolver PURA del backend
+  // (listDrivers.basePending = entregadas − devueltas, todo el historial). La base ya no se
+  // concilia con la deuda por comisiones ni se "salda" con crédito: lo devuelto es lo devuelto.
   const basePendingByDriver = new Map(drivers.map(d => [d.id, d.basePending ?? 0]));
-  // "Devuelto / saldado" del día = de lo que se le entregó, cuánto YA NO debe. Incluye lo devuelto
-  // en efectivo/transferencia (g.paid) MÁS lo saldado con su saldo a favor (crédito), de modo que
-  //   Entregado − Devuelto/saldado = Pendiente (conciliado con la deuda).
-  // Nunca por debajo de lo realmente devuelto (g.paid) ni por encima de lo entregado (g.given).
-  // Ej. Andrés: entregó 300.000, devolvió 234.600 + 65.400 con saldo a favor → saldado 300.000, al día.
-  const settledOf = (given: number, paid: number, driverId: string) => {
-    const basePending = basePendingByDriver.get(driverId) ?? 0;
-    return Math.min(given, Math.max(paid, given - basePending));
-  };
+  const settledOf = (_given: number, paid: number) => paid;
   const driverGroups = [...groupMap.values()]
     .map(g => {
       const balance = basePendingByDriver.get(g.driverId) ?? 0;
-      const settled = settledOf(g.given, g.paid, g.driverId);
+      const settled = settledOf(g.given, g.paid);
       return { ...g, balance, settled, creditSettled: Math.max(0, settled - g.paid) };
     })
     .filter(g => !search.trim() || g.name.toLowerCase().includes(search.toLowerCase()))
@@ -141,7 +130,7 @@ export default function BasesPage() {
     .sort((a, b) => (b.balance - a.balance) || a.name.localeCompare(b.name, "es"));
 
   // Totales del día para las tarjetas de arriba, con el mismo criterio conciliado.
-  const totalSettled = [...groupMap.values()].reduce((s, g) => s + settledOf(g.given, g.paid, g.driverId), 0);
+  const totalSettled = [...groupMap.values()].reduce((s, g) => s + settledOf(g.given, g.paid), 0);
 
   return (
     <div className="space-y-6">

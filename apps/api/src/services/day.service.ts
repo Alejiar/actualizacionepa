@@ -259,6 +259,13 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
     netProfit: comision - gastos - nomina,
     hasClose: !!closeShift,
     cajaCuadrada,
+    // D7: el Cierre conserva su conteo ORIGINAL; las correcciones aprobadas después se listan
+    // aparte (finalCash/finalBank ya las incluyen vía getExpectedBalancesForDate).
+    close: closeShift ? {
+      totalCounted: closeShift.totalCounted, totalExpected: closeShift.totalExpected, difference: closeShift.difference,
+      bankCounted: closeShift.bankCounted, bankExpected: closeShift.bankExpected, bankDifference: closeShift.bankDifference,
+      closedAt: closeShift.closedAt, corrections: closeShift.corrections,
+    } : null,
   };
 }
 

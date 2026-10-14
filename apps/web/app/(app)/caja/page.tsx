@@ -10,7 +10,7 @@ import { EditRequestWizard, type EditableField } from "@/components/wizards/Edit
 import { DeleteRequestWizard } from "@/components/wizards/DeleteRequestWizard";
 import { useLive } from "@/lib/use-live";
 import { useAuth } from "@/lib/auth";
-import { todayBogota } from "@/lib/format";
+import { todayBogota, shiftDate } from "@/lib/format";
 import { Pencil, Trash2 } from "lucide-react";
 
 function formatCOP(n: number) { return "$" + n.toLocaleString("es-CO"); }
@@ -48,10 +48,8 @@ export default function CajaPage() {
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const from = new Date();
-      from.setDate(from.getDate() - 30);
       const [data] = await Promise.all([
-        api.getShifts({ from: from.toISOString().slice(0, 10) }),
+        api.getShifts({ from: shiftDate(todayBogota(), -30) }),
         api.getCurrentOperatingDate().then(r => setToday(r.date)).catch(() => {}),
       ]);
       setShifts(prev => JSON.stringify(prev) === JSON.stringify(data) ? prev : data);

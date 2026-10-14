@@ -7,7 +7,11 @@ import { notFound, badRequest, conflict } from "../lib/errors";
 import { toBogotaDateStr } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import { applyDebtDelta } from "./driver.service";
-import { assertOpenPeriod, assertOpenInstant, movementEffectiveAt } from "../lib/period-guard";
+import { getBaseLedger } from "../lib/base-balance";
+import { assertOpenPeriod, assertOpenInstant, movementEffectiveAt, runAsApprovedCorrection, assertCalendarDate } from "../lib/period-guard";
+import { getRawExpectedEndOfDay } from "./shipday-dashboard.service";
+import { addMovement } from "./movement.service";
+import { assertMoney } from "../lib/money-validation";
 import { deleteShift as deleteHourlyShift, editShift as editHourlyShift, deleteHourlyBankTx } from "./hourly-client.service";
 
 type ChangeMap = Record<string, { old: string; new: string }>;
@@ -59,6 +63,27 @@ export async function countPending() {
   return prisma.editRequest.count({ where: { status: "pending" } });
 }
 
+/**
+ * D7: solicitud para AGREGAR dinero olvidado a un día que ya tiene Cierre (mes abierto). Solo
+ * movimientos de Caja (Movement) o de Banco/efectivo (BankTransaction). Se valida aquí lo que no
+ * depende del momento de aprobación; la regla de período se vuelve a verificar al aplicar.
+ */
+const creatable = new Set(["Movement", "BankTransaction"]);
+type CreatePayload = { date: string; type: "ingreso" | "egreso"; medium: "cash" | "bank"; amount: number; description: string; category?: number };
+async function validateCreate(entityType: string, raw: unknown): Promise<CreatePayload> {
+  if (!creatable.has(entityType)) throw badRequest("Solo se pueden agregar movimientos de Caja o de Banco por solicitud.");
+  const c = (raw ?? {}) as Record<string, unknown>;
+  assertCalendarDate(c.date, "La fecha");
+  if (c.type !== "ingreso" && c.type !== "egreso") throw badRequest("Tipo inválido (ingreso o egreso).");
+  if (c.medium !== "cash" && c.medium !== "bank") throw badRequest("Medio inválido (cash o bank).");
+  assertMoney(c.amount);
+  if (typeof c.description !== "string" || !c.description.trim()) throw badRequest("Describe el movimiento.");
+  if (entityType === "Movement" && (typeof c.category !== "number" || !Number.isSafeInteger(c.category))) throw badRequest("Indica la categoría del movimiento de Caja.");
+  const closed = await prisma.shiftClose.findUnique({ where: { date_shift: { date: c.date as string, shift: "close" } }, select: { id: true } });
+  if (!closed) throw badRequest("Ese día no tiene Cierre: registra el movimiento directamente.");
+  return { date: c.date as string, type: c.type, medium: c.medium, amount: c.amount as number, description: (c.description as string).trim(), ...(entityType === "Movement" ? { category: c.category as number } : {}) };
+}
+
 export async function createRequest(data: {
   requesterId: string;
   entityType: string;
@@ -66,8 +91,20 @@ export async function createRequest(data: {
   entityLabel: string;
   changes: ChangeMap;
   reason: string;
-  requestType?: "edit" | "delete";
+  requestType?: "edit" | "delete" | "create";
 }) {
+  if (data.requestType === "create") {
+    if (!data.reason?.trim()) throw badRequest("Debes indicar el motivo");
+    const payload = await validateCreate(data.entityType, data.changes);
+    return prisma.editRequest.create({
+      data: {
+        requesterId: data.requesterId, requestType: "create", entityType: data.entityType, entityId: "nuevo",
+        entityLabel: data.entityLabel || `Agregar ${payload.type} ${payload.medium === "cash" ? "efectivo" : "banco"} $${payload.amount.toLocaleString("es-CO")} al ${payload.date}`,
+        changes: payload, reason: data.reason,
+      },
+      include: { requester: { select: { id: true, name: true } } },
+    });
+  }
   validateChanges(data.entityType,data.changes,data.requestType === "delete");
   if (!data.reason.trim()) throw badRequest("Debes indicar el motivo");
   const requestType = data.requestType ?? "edit";
@@ -101,19 +138,33 @@ export async function reviewRequest(id: string, reviewerId: string, action: "app
   // "Aprobada" en el historial sin haber tocado nada. Antes se marcaba aprobada primero
   // y luego se aplicaba el efecto: un fallo dejaba un falso "Aprobada" (parte del bug del
   // Pedido #35). El propio efecto de cada entidad ya es transaccional.
+  let createdId: string | null = null;
   if (action === "approved") {
-    if (req.requestType === "delete") {
-      await deleteEntity(req.entityType, req.entityId, reviewerId);
-    } else {
-      const reviewer = await prisma.user.findUnique({ where: { id: reviewerId }, select: { name: true } });
-      await applyChanges(req.entityType, req.entityId, req.changes as ChangeMap, { id: reviewerId, name: reviewer?.name ?? null });
-    }
+    const reviewer = await prisma.user.findUnique({ where: { id: reviewerId }, select: { name: true } });
+    // D7: la aplicación de una solicitud aprobada puede tocar un día con Cierre (mes abierto).
+    // Se mide el efecto en el flujo de cada día cerrado ANTES y DESPUÉS y se deja constancia
+    // en su Cierre, sin alterar el conteo original.
+    await runAsApprovedCorrection(req.id, async () => {
+      const before = await closedDayFlows();
+      if (req.requestType === "delete") {
+        await deleteEntity(req.entityType, req.entityId, reviewerId);
+      } else if (req.requestType === "create") {
+        createdId = await createEntity(req.entityType, req.changes, req.requesterId);
+      } else {
+        await applyChanges(req.entityType, req.entityId, req.changes as ChangeMap, { id: reviewerId, name: reviewer?.name ?? null });
+      }
+      await recordClosedDayCorrections(before, {
+        requestId: req.id, requestType: req.requestType, entityType: req.entityType, entityId: createdId ?? req.entityId,
+        description: req.entityLabel, approvedBy: reviewerId, approvedByName: reviewer?.name ?? null,
+      });
+    });
   }
 
   // Marcar el estado de la solicitud solo si el efecto anterior no lanzó.
   const updated = await prisma.editRequest.update({
     where: { id },
     data: {
+      ...(createdId ? { entityId: createdId } : {}),
       status: action,
       reviewerId,
       reviewNotes: notes ?? null,
@@ -130,6 +181,53 @@ export async function reviewRequest(id: string, reviewerId: string, action: "app
 }
 
 // ── Eliminar entidad revirtiendo sus efectos en deudas/saldos ─────────────────
+/** D7: flujo neto (efectivo, banco) de cada día con Cierre del período abierto. */
+async function closedDayFlows(): Promise<Map<string, { cash: number; bank: number }>> {
+  const lastMonth = await prisma.monthlyClose.findFirst({ where: { branchId: null }, orderBy: { closedAt: "desc" }, select: { month: true } });
+  const closes = await prisma.shiftClose.findMany({
+    where: { shift: "close", ...(lastMonth ? { date: { gt: lastMonth.month + "-31" } } : {}) },
+    select: { date: true }, orderBy: { date: "asc" },
+  });
+  const out = new Map<string, { cash: number; bank: number }>();
+  for (const { date } of closes) {
+    const prev = toBogotaDateStr(new Date(new Date(date + "T00:00:00-05:00").getTime() - 1));
+    const [end, start] = await Promise.all([getRawExpectedEndOfDay(date), getRawExpectedEndOfDay(prev)]);
+    out.set(date, { cash: end.cash - start.cash, bank: end.bank - start.bank });
+  }
+  return out;
+}
+
+async function recordClosedDayCorrections(
+  before: Map<string, { cash: number; bank: number }>,
+  meta: { requestId: string; requestType: string; entityType: string; entityId: string; description: string; approvedBy: string; approvedByName: string | null },
+) {
+  const after = await closedDayFlows();
+  const approvedAt = new Date().toISOString();
+  for (const [date, a] of after) {
+    const b = before.get(date) ?? { cash: 0, bank: 0 };
+    const cashDelta = a.cash - b.cash, bankDelta = a.bank - b.bank;
+    if (!cashDelta && !bankDelta) continue;
+    const close = await prisma.shiftClose.findUniqueOrThrow({ where: { date_shift: { date, shift: "close" } }, select: { id: true, corrections: true } });
+    const list = Array.isArray(close.corrections) ? (close.corrections as object[]) : [];
+    await prisma.shiftClose.update({
+      where: { id: close.id },
+      data: { corrections: [...list, { ...meta, cashDelta, bankDelta, approvedAt }] },
+    });
+  }
+}
+
+/** D7: aplica una solicitud aprobada de AGREGAR un movimiento a un día cerrado. */
+async function createEntity(entityType: string, raw: unknown, requesterId: string): Promise<string> {
+  const c = await validateCreate(entityType, raw);
+  const requester = await prisma.user.findUnique({ where: { id: requesterId }, select: { name: true } });
+  if (entityType === "Movement") {
+    const m = await addMovement({ date: c.date, category: c.category!, type: c.type, medium: c.medium, amount: c.amount, description: c.description, status: "confirmed", createdBy: requesterId, createdByName: requester?.name ?? undefined } as Parameters<typeof addMovement>[0]);
+    return m.id;
+  }
+  const t = await bankSvc.create({ type: c.type, medium: c.medium, amount: c.amount, description: c.description, date: c.date, noCounterpart: true, createdBy: requesterId, createdByName: requester?.name ?? null });
+  return (t as { id?: string; parts?: { id: string }[] }).id ?? (t as { parts: { id: string }[] }).parts[0].id;
+}
+
 async function deleteEntity(entityType: string, entityId: string, deletedBy?: string) {
   validateChanges(entityType, {}, true);
   // El registro debe existir: aprobar la eliminación de algo que ya no existe no aplica
@@ -203,15 +301,13 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
       const base = await prisma.baseTransaction.findUnique({ where: { id: entityId } });
       if (!base) return;
       if (base.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos.");
-      await prisma.$transaction(async (tx) => {
-        // Netear contra el crédito (applyDebtDelta) en vez de un increment/decrement
-        // crudo: así borrar una base nunca deja pendingDebt negativo ni desincroniza el
-        // crédito (mismo criterio que base.service.ts). entrega subía deuda (al borrar
-        // baja), pago la bajaba (al borrar sube).
-        const delta = base.type === "entrega" ? -base.amount : base.amount;
-        await tx.baseTransaction.delete({ where: { id: entityId } });
-        await applyDebtDelta(tx, base.driverId, delta);
-      });
+      // F14: la base es una cuenta propia; borrarla no toca la deuda por comisiones. El libro
+      // de base nunca puede quedar con más devuelto que entregado.
+      if (base.type === "entrega") {
+        const l = await getBaseLedger(prisma, base.driverId);
+        if (l.given - base.amount < l.returned) throw conflict("La base ya tiene devoluciones registradas. Elimina primero la devolución.");
+      }
+      await prisma.baseTransaction.delete({ where: { id: entityId } });
       break;
     }
     case "ClientDebt": {
@@ -368,7 +464,7 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
 /** Guardia compartida por aprobaciones y reversiones; corre dentro de moneyTransaction. */
 async function assertEntityPeriod(entity: string, id: string) {
   if (entity === "ShiftClose" || entity === "MonthlyClose") {
-    throw conflict("Los cierres históricos no se eliminan ni se reescriben. La corrección requiere definir D7.");
+    throw conflict("Un Cierre conserva su conteo original: no se elimina ni se reescribe. Para corregir el dinero de ese día, solicita editar, eliminar o agregar el movimiento (D7).");
   }
   if (entity === "DriverPayment") {
     const row = await prisma.driverPayment.findUniqueOrThrow({ where: { id } });
@@ -466,15 +562,12 @@ async function applyBaseTransactionChange(baseId: string, newValues: Record<stri
 
   if (!Number.isSafeInteger(newAmount) || newAmount <= 0 || newCash < 0 || newBank < 0) throw badRequest("Monto inválido");
   const delta = newAmount - base.amount;
-
-  await prisma.$transaction(async (tx) => {
-    await tx.baseTransaction.update({ where: { id: baseId }, data: { ...newValues, cashAmount: newCash, bankAmount: newBank, amount: newAmount } });
-    if (delta !== 0) {
-      // entrega aumenta deuda, pago la reduce
-      const sign = base.type === "entrega" ? 1 : -1;
-      await applyDebtDelta(tx,base.driverId,sign*delta);
-    }
-  });
+  // F14: solo cambia el libro de base (y la caja); nunca la deuda por comisiones.
+  const l = await getBaseLedger(prisma, base.driverId);
+  if (l.given + (base.type === "entrega" ? delta : 0) < l.returned + (base.type === "pago" ? delta : 0)) {
+    throw conflict("La base quedaría con más devoluciones que entregas.");
+  }
+  await prisma.baseTransaction.update({ where: { id: baseId }, data: { ...newValues, cashAmount: newCash, bankAmount: newBank, amount: newAmount } });
 }
 
 // ── ClientDebt: ajustar pendingDebt del cliente por la diferencia ─────────────

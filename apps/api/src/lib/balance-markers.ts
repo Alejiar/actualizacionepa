@@ -26,6 +26,14 @@ export function isBankLinkedPaymentNote(notes?: string | null): boolean {
   return !!notes && notes.startsWith(BANK_LINKED_PAYMENT_NOTE);
 }
 
+/**
+ * Migración F14 (separar base de comisiones): la base que históricamente quedó compensada
+ * con comisiones o crédito (residuo del libro que `reconcileBasePending` ocultaba) se
+ * registró como devolución INTERNA con esta nota. No es dinero que entró: igual que los
+ * registros bank-linked, se excluye de caja/banco y de las devoluciones por medio.
+ */
+export const F14_REGULARIZATION_PREFIX = "Regularización F14";
+
 export function isBankLinkedBaseNote(notes?: string | null): boolean {
-  return !!notes && notes.startsWith(BANK_LINKED_BASE_PREFIX);
+  return !!notes && (notes.startsWith(BANK_LINKED_BASE_PREFIX) || notes.startsWith(F14_REGULARIZATION_PREFIX));
 }

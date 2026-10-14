@@ -4,18 +4,21 @@ import { assertOpenInstant, financialNow } from "../lib/period-guard";
 import { badRequest, notFound } from "../lib/errors";
 import { bogotaDayRange, todayBogota } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, bankLinkedBaseNote } from "../lib/balance-markers";
-import { reconcileBasePending } from "../lib/base-balance";
+import { basePendingByDriver, getBaseLedger } from "../lib/base-balance";
 
 // Usuario + equipo (PC) que hace la acción. Compatible con lo que devuelve getActor(req).
 type ActorLike = { id?: string | null; name?: string | null; deviceId?: string | null; deviceName?: string | null };
 
 /**
- * Aplica un cambio en la cuenta de un domiciliario manteniendo SIEMPRE el
+ * Aplica un cambio en la cuenta de COMISIONES de un domiciliario manteniendo SIEMPRE el
  * invariante de que deuda y crédito NO sean ambos positivos a la vez.
  *
+ * F14 (14-oct-2026): esta cuenta es SOLO de comisiones. La base se lleva en su propio libro
+ * (lib/base-balance) y no se compensa con la deuda ni con el crédito.
+ *
  * La verdad única es el neto = pendingDebt − creditAmount:
- *   delta > 0  → debe más (comisión de un pedido, base entregada)
- *   delta < 0  → se le debe más / paga (devolución de base, pago)
+ *   delta > 0  → debe más (comisión de un pedido)
+ *   delta < 0  → se le debe más / paga (pago de comisión)
  *
  * Antes, al entrar un pedido se hacía `pendingDebt += comisión` SIN descontar el
  * crédito que la empresa ya le debía, dejando deuda y crédito positivos al tiempo
@@ -49,6 +52,8 @@ function formatCOP(n: number): string {
 }
 
 export async function listDrivers(branchId?: string) {
+  // F14: un inactivo con base sin devolver también debe verse (para cobrársela).
+  const withBase = [...(await basePendingByDriver(prisma, { branchId })).entries()].filter(([, v]) => v > 0).map(([id]) => id);
   const drivers = await prisma.driver.findMany({
     where: {
       ...(branchId ? { branchId } : {}),
@@ -61,32 +66,20 @@ export async function listDrivers(branchId?: string) {
         { active: true },
         { pendingDebt: { gt: 0 } },
         { creditAmount: { gt: 0 } },
+        { id: { in: withBase } },
       ],
     },
     include: { branch: { select: { id: true, name: true } } },
     orderBy: { name: "asc" },
   });
 
-  // Base pendiente CONCILIADA con la deuda neta, por domiciliario. Es la FUENTE ÚNICA que usa
-  // el módulo de Bases para el estado "Debe base / Cuadrado", de modo que coincida siempre con
-  // Deudas/Domiciliarios/Reportes (todos derivan de la posición neta). Ver lib/base-balance.
-  const ledger = drivers.length
-    ? await prisma.baseTransaction.groupBy({
-        by: ["driverId", "type"],
-        _sum: { amount: true },
-        where: { driverId: { in: drivers.map(d => d.id) } },
-      })
-    : [];
-  const ledgerByDriver = new Map<string, number>();
-  for (const row of ledger) {
-    const cur = ledgerByDriver.get(row.driverId) ?? 0;
-    const amt = row._sum.amount ?? 0;
-    ledgerByDriver.set(row.driverId, cur + (row.type === "entrega" ? amt : -amt));
-  }
-  return drivers.map(d => ({
-    ...d,
-    basePending: reconcileBasePending(ledgerByDriver.get(d.id) ?? 0, d.pendingDebt),
-  }));
+  // F14: base pendiente PURA del libro de base (entregadas − devueltas), independiente de la
+  // deuda por comisiones. `totalInformativo` es solo una suma para mostrar, no otra deuda.
+  const baseById = await basePendingByDriver(prisma, { driverIds: drivers.map(d => d.id) });
+  return drivers.map(d => {
+    const basePending = baseById.get(d.id) ?? 0;
+    return { ...d, basePending, totalInformativo: basePending + d.pendingDebt - (d.creditAmount ?? 0) };
+  });
 }
 
 export async function getDriverDetail(id: string) {
@@ -101,10 +94,18 @@ export async function getDriverDetail(id: string) {
     },
   });
   if (!driver) throw notFound("Domiciliario no encontrado");
-  return driver;
+  // F14: base pendiente pura (libro de base), separada de la deuda por comisiones.
+  const base = await getBaseLedger(prisma, id);
+  return { ...driver, basePending: base.pending, basesGiven: base.given, basesReturned: base.returned, totalInformativo: base.pending + driver.pendingDebt - (driver.creditAmount ?? 0) };
 }
 
-export async function registerPayment(driverId: string, amount: number, medium: "cash" | "bank", notes?: string, actor?: ActorLike) {
+/**
+ * Pago de un domiciliario. F14: el OPERADOR divide el importe entre comisión y base
+ * (`baseAmount`; el resto va a comisión). La parte de comisión reduce la deuda por
+ * comisiones (si sobra, queda crédito a favor); la parte de base reduce solo el libro de
+ * base y nunca puede superar la base pendiente. Un único ingreso de caja/banco por el total.
+ */
+export async function registerPayment(driverId: string, amount: number, medium: "cash" | "bank", notes?: string, actor?: ActorLike, baseAmount = 0) {
   return moneyTransaction(async () => {
   await assertOpenInstant(undefined, "El pago del domiciliario");
   if (!Number.isSafeInteger(amount) || amount <= 0) throw badRequest("Monto inválido");
@@ -113,18 +114,8 @@ export async function registerPayment(driverId: string, amount: number, medium: 
   if (!driver) throw notFound("Domiciliario no encontrado");
   await assertOpenInstant(undefined, "El pago del domiciliario", driver.branchId);
 
-  // Saldo de base pendiente vía aggregate (no carga todas las filas)
-  const [givenAgg, paidAgg] = await Promise.all([
-    prisma.baseTransaction.aggregate({ where: { driverId, type: "entrega" }, _sum: { amount: true } }),
-    prisma.baseTransaction.aggregate({ where: { driverId, type: "pago" }, _sum: { amount: true } }),
-  ]);
-  const basesGiven = givenAgg._sum.amount ?? 0;
-  const basesPaid = paidAgg._sum.amount ?? 0;
-  const basePending = reconcileBasePending(basesGiven - basesPaid, driver.pendingDebt);
-
-  // Asignación: primero a base, el resto a comisión
-  const baseAlloc = Math.min(amount, basePending);
-  const commissionAlloc = amount - baseAlloc;
+  const basePending = (await getBaseLedger(prisma, driverId)).pending;
+  const { baseAlloc, commissionAlloc } = splitPayment(amount, baseAmount, basePending);
 
   // Registra UN solo movimiento (bankTransaction) como registro autoritativo de display y saldo.
   const recordedAt = await financialNow();
@@ -201,24 +192,27 @@ export async function registerPayment(driverId: string, amount: number, medium: 
       });
     }
 
-    // Deuda del domiciliario
-    const newDebt = Math.max(0, driver.pendingDebt - amount);
-    const excess = Math.max(0, amount - driver.pendingDebt);
-    const newCredit = (driver.creditAmount ?? 0) + excess;
-    await tx.driver.update({
-      where: { id: driverId },
-      data: {
-        pendingDebt: newDebt,
-        ...(excess > 0 ? { creditAmount: newCredit, creditMedium: medium } : {}),
-      },
-    });
+    // Solo la parte de comisión toca la cuenta de comisiones (el sobrante queda a favor).
+    if (commissionAlloc > 0) {
+      await applyDebtDelta(tx, driverId, -commissionAlloc);
+      const after = await tx.driver.findUniqueOrThrow({ where: { id: driverId }, select: { creditAmount: true } });
+      if ((after.creditAmount ?? 0) > (driver.creditAmount ?? 0)) await tx.driver.update({ where: { id: driverId }, data: { creditMedium: medium } });
+    }
   });
 
-  const excess = Math.max(0, amount - driver.pendingDebt);
-  const newCredit = (driver.creditAmount ?? 0) + excess;
-  return { payment, baseAlloc, commissionAlloc, basePendingBefore: basePending, excess, creditAmount: excess > 0 ? newCredit : 0 };
+  const final = await prisma.driver.findUniqueOrThrow({ where: { id: driverId }, select: { pendingDebt: true, creditAmount: true } });
+  return { payment, baseAlloc, commissionAlloc, basePendingBefore: basePending, commissionDebt: final.pendingDebt, creditAmount: final.creditAmount ?? 0 };
 
   });
+}
+
+/** Valida el reparto pedido por el operador (F14). */
+function splitPayment(amount: number, baseAmount: unknown, basePending: number) {
+  const b = baseAmount === undefined || baseAmount === null ? 0 : baseAmount;
+  if (typeof b !== "number" || !Number.isSafeInteger(b) || b < 0) throw badRequest("La parte a base debe ser un entero ≥ 0.");
+  if (b > amount) throw badRequest("La parte a base no puede superar el pago.");
+  if (b > basePending) throw badRequest(`La parte a base ($${b.toLocaleString("es-CO")}) supera la base pendiente ($${basePending.toLocaleString("es-CO")}).`);
+  return { baseAlloc: b, commissionAlloc: amount - b };
 }
 
 export async function getDriverStatement(id: string) {
@@ -248,7 +242,7 @@ export async function getDriverStatement(id: string) {
   // ningún saldo real (pendingDebt) ni la lógica de deuda.
   const events: { t: number; delta: number }[] = [];
   for (const o of orders) if (o.deliveredAt) events.push({ t: o.deliveredAt.getTime(), delta: o.companyAmount });
-  for (const b of bases) events.push({ t: b.date.getTime(), delta: b.type === "entrega" ? b.amount : -b.amount });
+  // F14: el ciclo de la deuda es de COMISIONES; la base se lleva aparte.
   for (const p of payments) events.push({ t: p.date.getTime(), delta: -p.amount });
   events.sort((a, b) => a.t - b.t);
   let bal = 0;
@@ -270,6 +264,8 @@ export async function getDriverStatement(id: string) {
     debtCycleStart,
     pendingDebt: driver.pendingDebt,
     creditAmount: driver.creditAmount ?? 0,
+    basePending: Math.max(0, totalBasesGiven - totalBasesPaid),
+    totalInformativo: Math.max(0, totalBasesGiven - totalBasesPaid) + driver.pendingDebt - (driver.creditAmount ?? 0),
     creditMedium: driver.creditMedium ?? null,
     orders,
     bases,
@@ -281,7 +277,8 @@ export async function getDriverStatement(id: string) {
 export async function applyBankToDriver(
   bankTxId: string,
   driverId: string,
-  actor?: ActorLike
+  actor?: ActorLike,
+  baseAmount = 0,
 ) {
   return moneyTransaction(async () => {
   const [bankTx, driver] = await Promise.all([
@@ -309,55 +306,17 @@ export async function applyBankToDriver(
       "Este ingreso tiene contraparte registrada, así que no es un pago del domiciliario y no puede descontarse de su deuda."
     );
   }
-  if (bankTx.debtApplied > 0) {
+  if (bankTx.debtApplied !== 0) {
     throw badRequest("Este movimiento ya fue descontado de la deuda de un domiciliario.");
   }
 
   const amount = bankTx.amount;
   const medium = (bankTx.medium ?? "bank") as "cash" | "bank";
-  const previousDebt = driver.pendingDebt;
-  const previousCredit = driver.creditAmount ?? 0;
-
-  // Si el domiciliario ya tiene crédito (empresa le debe), sumar al crédito
-  if (previousDebt <= 0 && previousCredit > 0) {
-    const newCredit = previousCredit + amount;
-    await prisma.$transaction([
-      prisma.driver.update({
-        where: { id: driverId },
-        data: { creditAmount: newCredit, creditMedium: medium },
-      }),
-      prisma.bankTransaction.update({
-        where: { id: bankTxId },
-        data: {
-          driverId,
-          driverName: driver.name,
-          // noCounterpart: marca este movimiento como "aplicado a la deuda/crédito del
-          // domiciliario", para que al eliminarlo se revierta ese efecto (igual que
-          // registerPayment). Sin esto, borrar el movimiento dejaba el crédito fantasma.
-          noCounterpart: true,
-          // Sube el crédito en `amount` = baja la posición neta en `amount`.
-          debtApplied: amount,
-          description: `${bankTx.description} · Abonado al crédito de ${driver.name} (${formatCOP(amount)})`,
-        },
-      }),
-    ]);
-    return { applied: amount, previousDebt: 0, newDebt: 0, creditAmount: newCredit, creditMedium: medium, excess: newCredit };
-  }
-
-  // Caso normal: descontar del pendingDebt
-  const applied = Math.min(amount, previousDebt);
-  const excess = amount - previousDebt; // positivo = empresa queda debiendo
+  // F14: el operador indica cuánto del ingreso es devolución de base; el resto es comisión.
+  const basePending = (await getBaseLedger(prisma, driverId)).pending;
+  const { baseAlloc, commissionAlloc } = splitPayment(amount, baseAmount, basePending);
 
   await prisma.$transaction(async (tx) => {
-    // Registrar el pago para que quede en el historial del domiciliario
-    const [givenAgg, paidAgg] = await Promise.all([
-      tx.baseTransaction.aggregate({ where: { driverId, type: "entrega" }, _sum: { amount: true } }),
-      tx.baseTransaction.aggregate({ where: { driverId, type: "pago" }, _sum: { amount: true } }),
-    ]);
-    const basePending = reconcileBasePending((givenAgg._sum.amount ?? 0) - (paidAgg._sum.amount ?? 0), driver.pendingDebt);
-    const baseAlloc = Math.min(applied, basePending);
-    const commissionAlloc = applied - baseAlloc;
-
     if (baseAlloc > 0) {
       await tx.baseTransaction.create({
         data: {
@@ -393,46 +352,48 @@ export async function applyBankToDriver(
           date: bankTx.date,
         },
       });
+      await applyDebtDelta(tx, driverId, -commissionAlloc);
+      const after = await tx.driver.findUniqueOrThrow({ where: { id: driverId }, select: { creditAmount: true } });
+      if ((after.creditAmount ?? 0) > (driver.creditAmount ?? 0)) await tx.driver.update({ where: { id: driverId }, data: { creditMedium: medium } });
     }
-
-    const newDebt = Math.max(0, previousDebt - amount);
-    const newCredit = excess > 0 ? excess : 0;
-
-    await tx.driver.update({
-      where: { id: driverId },
-      data: {
-        pendingDebt: newDebt,
-        creditAmount: newCredit,
-        creditMedium: newCredit > 0 ? medium : null,
-      },
-    });
 
     // Dejar escrito en la descripción del movimiento QUÉ se descontó y a quién.
     const partes: string[] = [];
     if (baseAlloc > 0) partes.push(`base ${formatCOP(baseAlloc)}`);
     if (commissionAlloc > 0) partes.push(`comisión ${formatCOP(commissionAlloc)}`);
-    const detalle = partes.length ? `: ${partes.join(" + ")}` : "";
-    const sobrante = excess > 0 ? ` · sobrante a crédito ${formatCOP(excess)}` : "";
     await tx.bankTransaction.update({
       where: { id: bankTxId },
       data: {
         driverId,
         driverName: driver.name,
-        // Ver nota en la rama de crédito: marca el movimiento como aplicado a la
-        // deuda del domiciliario para poder revertirlo al eliminarlo.
+        // Marca el movimiento como aplicado al domiciliario para poder revertirlo al
+        // eliminarlo: comisión = debtApplied − bases enlazadas (ver revertDriverApplication).
         noCounterpart: true,
-        // La posición neta bajó en `amount` completo (parte a deuda, sobrante a crédito).
         debtApplied: amount,
-        description: `${bankTx.description} · Descontado de la deuda de ${driver.name}${detalle}${sobrante}`,
+        description: `${bankTx.description} · Aplicado a ${driver.name}: ${partes.join(" + ")}`,
       },
     });
   });
 
-  const newDebt = Math.max(0, previousDebt - amount);
-  const creditAmount = excess > 0 ? excess : 0;
-  return { applied, previousDebt, newDebt, creditAmount, creditMedium: creditAmount > 0 ? medium : null, excess };
+  const final = await prisma.driver.findUniqueOrThrow({ where: { id: driverId }, select: { pendingDebt: true, creditAmount: true, creditMedium: true } });
+  return { applied: amount, baseAlloc, commissionAlloc, previousDebt: driver.pendingDebt, newDebt: final.pendingDebt, creditAmount: final.creditAmount ?? 0, creditMedium: final.creditMedium, basePendingBefore: basePending };
 
   });
+}
+
+/**
+ * Revierte el efecto de un BankTransaction aplicado a un domiciliario. `debtApplied` guarda
+ * el TOTAL aplicado (comisión + base) desde siempre; la parte de base vive en las
+ * BaseTransaction enlazadas por `bankTransactionId` (que el borrado elimina en cascada y así
+ * restaura el libro de base). Por eso la cuenta de comisiones se revierte solo por
+ * `debtApplied − Σ bases enlazadas`. Vale para registros anteriores y posteriores a F14, y
+ * para el egreso que pagó un crédito (debtApplied < 0, sin bases enlazadas).
+ * Debe llamarse ANTES de borrar el movimiento (necesita sus bases enlazadas).
+ */
+export async function revertDriverApplication(tx: Prisma.TransactionClient, row: { id: string; driverId: string | null; debtApplied: number }) {
+  if (!row.driverId || row.debtApplied === 0) return;
+  const linkedBase = (await tx.baseTransaction.aggregate({ where: { bankTransactionId: row.id }, _sum: { amount: true } }))._sum.amount ?? 0;
+  await applyDebtDelta(tx, row.driverId, row.debtApplied - linkedBase);
 }
 
 export async function payCredit(

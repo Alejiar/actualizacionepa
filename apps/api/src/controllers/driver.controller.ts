@@ -16,8 +16,9 @@ export async function statement(req: Request, res: Response) {
 }
 
 export async function registerPayment(req: Request, res: Response) {
-  const { amount, medium, notes } = req.body;
-  res.status(201).json(await svc.registerPayment(req.params.id, Number(amount), medium, notes, getActor(req)));
+  // F14: `baseAmount` = parte del pago que el operador asigna a devolver base (el resto, comisión).
+  const { amount, medium, notes, baseAmount } = req.body;
+  res.status(201).json(await svc.registerPayment(req.params.id, Number(amount), medium, notes, getActor(req), baseAmount));
 }
 
 export async function payCredit(req: Request, res: Response) {

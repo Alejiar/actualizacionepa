@@ -49,9 +49,11 @@ async function main() {
   }
   {
     const d = await driver('Bases simultáneas');
-    const outcomes = await Promise.allSettled([bs.giveBase(d.id,{cashAmount:10000}),bs.giveBase(d.id,{cashAmount:20000})]);
+    // F14 (14-oct-2026): la base ya no suma a la deuda por comisiones; la concurrencia de
+    // applyDebtDelta se ejerce con dos comisiones simultáneas y la de bases con su libro.
+    const outcomes = await Promise.allSettled([bs.giveBase(d.id,{cashAmount:10000}),bs.giveBase(d.id,{cashAmount:20000}),webhook(d,10000),webhook(d,20000)]);
     const total = await p.baseTransaction.aggregate({where:{driverId:d.id},_sum:{amount:true}});
-    report('N3','applyDebtDelta no debe perder incrementos concurrentes', {success:outcomes.filter(x=>x.status==='fulfilled').length,given:total._sum.amount,...await state(d.id)}, {success:2,given:30000,debt:30000,credit:0});
+    report('N3','applyDebtDelta no debe perder incrementos concurrentes', {success:outcomes.filter(x=>x.status==='fulfilled').length,given:total._sum.amount,...await state(d.id)}, {success:4,given:30000,debt:9000,credit:0});
   }
   {
     const b = await p.branch.create({data:{name:'Codex 21 deudores',apiKeyEnc:'invalid'}});

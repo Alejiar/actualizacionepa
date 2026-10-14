@@ -19,9 +19,9 @@ function formatCOP(n: number) {
 
 /** Dado "2026-06" retorna "2026-07" (siguiente mes) */
 function nextMonth(ym: string): string {
+  // Aritmética pura: no depende de la zona horaria del equipo.
   const [y, m] = ym.split("-").map(Number);
-  const d = new Date(y, m, 1);
-  return d.toISOString().slice(0, 7);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
 }
 
 /** "2026-06" → "junio 2026" */

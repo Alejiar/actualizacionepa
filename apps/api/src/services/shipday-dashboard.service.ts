@@ -1,3 +1,4 @@
+import { basePendingByDriver } from "../lib/base-balance";
 import { prisma } from "../lib/prisma";
 import * as bankSvc from "./bank-transaction.service";
 import * as shiftSvc from "./shift-close.service";
@@ -48,8 +49,29 @@ export async function getExpectedBalancesForDate(date: string) {
   return getExpectedBalances(date, { gte, lte });
 }
 
-async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: Date }) {
-  const dayClose = await prisma.shiftClose.findUnique({
+/** Saldo "crudo" al final de un día: todo lo registrado con fecha ≤ ese día, sin congelar su
+ * Cierre. Sirve para medir el efecto de una corrección aprobada sobre un día cerrado (D7). */
+export async function getRawExpectedEndOfDay(date: string) {
+  return getExpectedBalances(date, dateRange(date), { raw: true });
+}
+
+/** D7: suma de correcciones aprobadas DESPUÉS del cierre `closedAt`, de días ≤ `date`. */
+async function correctionsAfter(date: string, closedAt: Date) {
+  const rows = await prisma.shiftClose.findMany({
+    where: { shift: "close", date: { lte: date }, NOT: { corrections: { equals: [] } } },
+    select: { corrections: true },
+  });
+  let cash = 0, bank = 0;
+  for (const r of rows) {
+    for (const c of (r.corrections as Array<{ cashDelta?: number; bankDelta?: number; approvedAt?: string }>) ?? []) {
+      if (c.approvedAt && new Date(c.approvedAt).getTime() > closedAt.getTime()) { cash += c.cashDelta ?? 0; bank += c.bankDelta ?? 0; }
+    }
+  }
+  return { cash, bank };
+}
+
+async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: Date }, opts: { raw?: boolean } = {}) {
+  const dayClose = opts.raw ? null : await prisma.shiftClose.findUnique({
     where: { date_shift: { date: today, shift: "close" } },
     select: { closedAt: true, totalExpected: true, bankExpected: true },
   });
@@ -161,7 +183,15 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     else if (d.medium === "bank") baseBank -= d.amount;
   }
 
-  return { cash: dayClose?.totalExpected ?? baseCash, bank: dayClose?.bankExpected ?? baseBank };
+  if (!dayClose) return { cash: baseCash, bank: baseBank };
+  // Día cerrado: conserva el esperado registrado en su Cierre (su conteo nunca cambia) y suma las
+  // correcciones aprobadas DESPUÉS de ese cierre sobre días ≤ este (D7). Así el cierre de un día
+  // corregido sigue siendo la apertura del siguiente y la cadena del Historial cuadra.
+  const corr = await correctionsAfter(today, dayClose.closedAt);
+  return {
+    cash: dayClose.totalExpected + corr.cash,
+    bank: dayClose.bankExpected != null ? dayClose.bankExpected + corr.bank : baseBank,
+  };
 }
 
 export async function getDashboard(branchId?: string, date?: string) {
@@ -223,10 +253,14 @@ export async function getDashboard(branchId?: string, date?: string) {
       company: monthStats._sum.companyAmount ?? 0,
     },
     drivers: { total: totalDrivers, active: activeDrivers },
-    debts: {
-      totalAmount: pendingDebts._sum.pendingDebt ?? 0,
-      driverCount: pendingDebts._count.id,
-    },
+    // F14: comisiones y bases son cuentas separadas; `combined` es solo informativo.
+    debts: await (async () => {
+      const bases = await basePendingByDriver(prisma, branchId ? { branchId } : {});
+      const baseTotal = [...bases.values()].reduce((t, v) => t + v, 0);
+      const baseDrivers = [...bases.values()].filter(v => v > 0).length;
+      const commission = pendingDebts._sum.pendingDebt ?? 0;
+      return { totalAmount: commission, driverCount: pendingDebts._count.id, commission, basesPending: baseTotal, baseDriverCount: baseDrivers, combined: commission + baseTotal };
+    })(),
     recentOrders,
     branches,
   };
@@ -251,21 +285,27 @@ export async function getDebtsDashboard(branchId?: string) {
     orders: { orderBy: { deliveredAt: "desc" } as const, take: 5 },
     bases: { where: { type: "entrega" as const }, orderBy: { date: "desc" } as const, take: 20 },
   };
-  const [debtors, creditors] = await Promise.all([
+  // F14: "deben" = deuda por comisiones o base sin devolver (cuentas separadas, sin
+  // compensarse con el crédito); un domiciliario con base y crédito aparece en ambas listas.
+  const bases = await basePendingByDriver(prisma, branchFilter);
+  const withBase = [...bases.entries()].filter(([, v]) => v > 0).map(([id]) => id);
+  const [debtorRows, creditorRows] = await Promise.all([
     prisma.driver.findMany({
-      where: { ...branchFilter, pendingDebt: { gt: 0 } },
+      where: { ...branchFilter, OR: [{ pendingDebt: { gt: 0 } }, { id: { in: withBase } }] },
       include,
-      orderBy: [{ pendingDebt: "desc" }, { name: "asc" }],
-
     }),
     prisma.driver.findMany({
-      where: { ...branchFilter, pendingDebt: 0, creditAmount: { gt: 0 } },
+      where: { ...branchFilter, creditAmount: { gt: 0 } },
       include,
       orderBy: [{ creditAmount: "desc" }, { name: "asc" }],
-
     }),
   ]);
-  return { debtors, creditors };
+  const enrich = <T extends { id: string; pendingDebt: number; creditAmount: number | null }>(d: T) => {
+    const basePending = bases.get(d.id) ?? 0;
+    return { ...d, commissionDebt: d.pendingDebt, basePending, totalInformativo: d.pendingDebt + basePending - (d.creditAmount ?? 0) };
+  };
+  const debtors = debtorRows.map(enrich).sort((a, b) => (b.pendingDebt + b.basePending) - (a.pendingDebt + a.basePending) || a.name.localeCompare(b.name));
+  return { debtors, creditors: creditorRows.map(enrich) };
 }
 
 const DELIVERED = { in: ["DELIVERED", "COMPLETED"] };

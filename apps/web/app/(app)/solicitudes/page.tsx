@@ -57,6 +57,8 @@ export default function SolicitudesPage() {
   }, [user, router]);
 
   const load = async (silent = false) => {
+    // Solo el admin consulta solicitudes (el operador es redirigido): evita un 403 y un aviso de error.
+    if (user?.role !== "admin") return;
     if (!silent) setLoading(true);
     try {
       let data: EditRequest[];
@@ -72,7 +74,7 @@ export default function SolicitudesPage() {
     if (!silent) setLoading(false);
   };
 
-  useEffect(() => { load(); }, [view]);
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [view, user?.role]);
   useLive(() => load(true), 5000);
 
   // Lista visible: en historial aplica el filtro aprobadas/rechazadas
@@ -162,6 +164,11 @@ export default function SolicitudesPage() {
                         <Trash2 className="h-3 w-3" /> Eliminar
                       </span>
                     )}
+                    {r.requestType === "create" && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 font-bold">
+                        Agregar a día cerrado
+                      </span>
+                    )}
                     <h3 className="font-bold">{r.entityLabel}</h3>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
@@ -184,7 +191,21 @@ export default function SolicitudesPage() {
               </div>
 
               {/* Eliminación o cambios */}
-              {r.requestType === "delete" ? (
+              {r.requestType === "create" ? (
+                <div className="glass rounded-2xl p-4 border border-emerald-500/20 bg-emerald-500/5 space-y-1 text-sm">
+                  {(() => {
+                    const c = r.changes as unknown as { date: string; type: string; medium: string; amount: number; description: string; category?: number };
+                    return (
+                      <>
+                        <div className="font-bold text-emerald-700">Agregar al día cerrado {c.date}</div>
+                        <div>{c.type === "ingreso" ? "Ingreso" : "Egreso"} · {c.medium === "cash" ? "💵 Efectivo" : "🏦 Banco"} · <strong className="tnum">${Number(c.amount).toLocaleString("es-CO")}</strong></div>
+                        <div className="text-muted-foreground">{c.description}{c.category != null ? ` · categoría ${c.category}` : ""}</div>
+                        <div className="text-xs text-muted-foreground">Al aprobar, se registra con la fecha de ese día y su Cierre conserva el conteo original y muestra la corrección.</div>
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : r.requestType === "delete" ? (
                 <div className="glass rounded-2xl p-4 border border-red-500/20 bg-red-500/5 flex items-center gap-3">
                   <Trash2 className="h-5 w-5 text-red-500 shrink-0" />
                   <span className="text-sm font-medium text-red-600 dark:text-red-400">

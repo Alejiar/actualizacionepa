@@ -1,3 +1,4 @@
+import { basePendingByDriver } from "../lib/base-balance";
 import ExcelJS from "exceljs";
 import { prisma } from "../lib/prisma";
 import { getMonthlyReport } from "./close.service";
@@ -95,8 +96,10 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
     ["DIFERENCIA TRANSFERENCIAS", report.transfers.diff, "zero"],
     ["SALDO DEUDAS CLIENTES", report.clientDebt.balance, "zero"],
     ["COMISIONES PENDIENTES", report.commission.pending, "zero"],
+    // F14: base pendiente = saldo anterior + entregadas − devueltas (del mes); comisiones aparte.
     ["BASES PENDIENTES ANTERIORES", report.debtReconciliation.basesPrevious],
-    ["DEUDA ACTUAL DOMICILIARIOS", report.debtReconciliation.total],
+    ["CRÉDITO A FAVOR DOMICILIARIOS", report.commission.credit],
+    ["TOTAL INFORMATIVO DOMICILIARIOS (comisión + base − crédito)", report.debtReconciliation.total],
   ];
   let er = 2;
   for (const [label, val, kind] of rightRows) {
@@ -240,20 +243,29 @@ export async function buildMonthlyExcel(month: string, branchId?: string): Promi
     { header: "Sucursal", key: "branch", width: 18 },
     { header: "Nombre", key: "name", width: 22 },
     { header: "Teléfono", key: "phone", width: 16 },
-    { header: "Deuda pendiente", key: "debt", width: 20 },
+    // F14: comisiones y base son cuentas separadas; el total es solo informativo.
+    { header: "Deuda comisiones", key: "debt", width: 18 },
+    { header: "Crédito a favor", key: "credit", width: 16 },
+    { header: "Base sin devolver", key: "base", width: 18 },
+    { header: "Total informativo", key: "total", width: 18 },
     { header: "Estado", key: "active", width: 12 },
   ];
   driversSheet.getRow(1).eachCell(c => Object.assign(c, headerStyle));
+  const baseByDriver = await basePendingByDriver(prisma, { driverIds: drivers.map(d => d.id) });
   for (const d of drivers) {
+    const base = baseByDriver.get(d.id) ?? 0;
     driversSheet.addRow({
       branch: d.branch?.name ?? "",
       name: d.name,
       phone: d.phone ?? "",
       debt: d.pendingDebt,
+      credit: d.creditAmount ?? 0,
+      base,
+      total: d.pendingDebt + base - (d.creditAmount ?? 0),
       active: d.active ? "Activo" : "Inactivo",
     });
   }
-  driversSheet.getColumn("debt").numFmt = '"$"#,##0';
+  for (const k of ["debt", "credit", "base", "total"]) driversSheet.getColumn(k).numFmt = '"$"#,##0';
 
   // ─── Sheet 4: Bases ─────────────────────────────────────────────────────
   const basesSheet = wb.addWorksheet("Bases");

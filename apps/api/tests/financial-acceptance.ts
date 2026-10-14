@@ -27,39 +27,45 @@ async function main(){
  const edit=async(type:string,id:string,changes:any)=>{const r=await req(type,id,changes);return es.reviewRequest(r.id,admin.id,'approved')};
  const results:any[]=[];
  async function test(name:string,fn:()=>Promise<void>){try{await fn();results.push({name,ok:true})}catch(e){results.push({name,ok:false,error:String(e)})}console.log(JSON.stringify(results.at(-1)))}
+ // F14 (decisión del dueño 14-oct-2026): base y comisiones son cuentas separadas y el operador
+// divide cada pago (baseAmount). Estas pruebas conservan su intención original (rollback, no
+// doble aplicación, un solo delta, reparto editable/reversible, desglose interno protegido) con
+// el estado [deuda por comisiones, crédito, base pendiente].
+const st=async(id:string)=>{const d=await p.driver.findUniqueOrThrow({where:{id}});const l=await p.baseTransaction.groupBy({by:['type'],where:{driverId:id},_sum:{amount:true}});const g=l.find(x=>x.type==='entrega')?._sum.amount??0,r=l.find(x=>x.type==='pago')?._sum.amount??0;return [d.pendingDebt,d.creditAmount,g-r]};
  await test('Rollback conjunto de pago y saldo, incluso entre servicios',async()=>{
   const d=await driver();await bs.giveBase(d.id,{cashAmount:30000});
-  await assert.rejects(moneyTransaction(async()=>{await ds.registerPayment(d.id,10000,'cash');throw Error('fallo simulado')}));
-  assert.deepEqual(await state(d.id),[30000,0]);assert.equal(await p.bankTransaction.count({where:{driverId:d.id}}),0);
+  await assert.rejects(moneyTransaction(async()=>{await ds.registerPayment(d.id,10000,'cash',undefined,undefined,10000);throw Error('fallo simulado')}));
+  assert.deepEqual(await st(d.id),[0,0,30000]);assert.equal(await p.bankTransaction.count({where:{driverId:d.id}}),0);
   assert.equal(await p.baseTransaction.count({where:{driverId:d.id,type:'pago'}}),0);
  });
  await test('Un movimiento bancario no puede aplicarse dos veces',async()=>{
   const d=await driver();await bs.giveBase(d.id,{cashAmount:30000});
   const t=await bank.create({type:'ingreso',medium:'cash',amount:10000,description:'test',noCounterpart:true}) as any;
-  const r=await Promise.allSettled([ds.applyBankToDriver(t.id,d.id),ds.applyBankToDriver(t.id,d.id)]);
-  assert.equal(r.filter(x=>x.status==='fulfilled').length,1);assert.deepEqual(await state(d.id),[20000,0]);
+  const r=await Promise.allSettled([ds.applyBankToDriver(t.id,d.id,undefined,10000),ds.applyBankToDriver(t.id,d.id,undefined,10000)]);
+  assert.equal(r.filter(x=>x.status==='fulfilled').length,1);assert.deepEqual(await st(d.id),[0,0,20000]);
   assert.equal(await p.baseTransaction.count({where:{bankTransactionId:t.id}}),1);
  });
  await test('Dos aprobaciones simultáneas aplican un solo delta',async()=>{
   const d=await driver();const b=await bs.giveBase(d.id,{cashAmount:30000});
   const r=await req('BaseTransaction',b.id,{amount:{old:'30000',new:'40000'}});
   const rr=await Promise.allSettled([es.reviewRequest(r.id,admin.id,'approved'),es.reviewRequest(r.id,admin.id,'approved')]);
-  assert.equal(rr.filter(x=>x.status==='fulfilled').length,1);assert.deepEqual(await state(d.id),[40000,0]);
+  assert.equal(rr.filter(x=>x.status==='fulfilled').length,1);assert.deepEqual(await st(d.id),[0,0,40000]);
  });
  await test('Editar cobro dividido base/comisión y después eliminarlo',async()=>{
-  const d=await driver();await bs.giveBase(d.id,{cashAmount:50000});await ds.registerPayment(d.id,60000,'bank');
+  const d=await driver();await bs.giveBase(d.id,{cashAmount:50000});await ds.registerPayment(d.id,60000,'bank',undefined,undefined,50000);
+  assert.deepEqual(await st(d.id),[0,10000,0]);
   const t=await p.bankTransaction.findFirstOrThrow({where:{driverId:d.id}});
   await edit('BankTransaction',t.id,{amount:{old:'60000',new:'40000'}});
-  assert.deepEqual(await state(d.id),[10000,0]);
+  assert.deepEqual(await st(d.id),[0,0,10000]);
   assert.equal((await p.baseTransaction.aggregate({where:{bankTransactionId:t.id},_sum:{amount:true}}))._sum.amount,40000);
-  await bank.remove(t.id);assert.deepEqual(await state(d.id),[50000,0]);
+  await bank.remove(t.id);assert.deepEqual(await st(d.id),[0,0,50000]);
   assert.equal(await p.driverPayment.count({where:{bankTransactionId:t.id}}),0);
  });
  await test('No editar ni eliminar el desglose interno de un cobro',async()=>{
-  const d=await driver();await bs.giveBase(d.id,{cashAmount:30000});await ds.registerPayment(d.id,10000,'cash');
+  const d=await driver();await bs.giveBase(d.id,{cashAmount:30000});await ds.registerPayment(d.id,10000,'cash',undefined,undefined,10000);
   const b=await p.baseTransaction.findFirstOrThrow({where:{driverId:d.id,type:'pago'}});
   await assert.rejects(bs.removeBase(b.id));await assert.rejects(bs.editBase(b.id,{amount:9000}));
-  assert.deepEqual(await state(d.id),[20000,0]);
+  assert.deepEqual(await st(d.id),[0,0,20000]);
  });
  await test('No modificar campos contables arbitrarios ni montos negativos',async()=>{
   await assert.rejects(req('BankTransaction','none',{debtApplied:{old:'0',new:'1000'}}));

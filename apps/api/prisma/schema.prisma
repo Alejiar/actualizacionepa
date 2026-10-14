@@ -262,27 +262,27 @@ model Driver {
 }
 
 model ShipdayOrder {
-  manualOverride Boolean @default(false)
-  manualOriginalValue Int?
-  manualOverrideBy String?
-  manualOverrideAt DateTime?
+  manualOverride       Boolean     @default(false)
+  manualOriginalValue  Int?
+  manualOverrideBy     String?
+  manualOverrideAt     DateTime?
   shipdayDeliveryValue Int?
-  clientDebt ClientDebt?
-  id              String    @id @default(cuid())
-  shipdayOrderId  String    @unique
-  branchId        String
-  driverId        String?
-  orderNumber     String?
-  deliveryValue   Int       @default(0)
-  companyAmount   Int       @default(0)
-  customerName    String?
-  customerAddress String?
-  status          String
-  deliveredAt     DateTime?
-  rawData         Json?
-  clientId        String?
-  addToClientDebt Boolean   @default(false)
-  createdAt       DateTime  @default(now())
+  clientDebt           ClientDebt?
+  id                   String      @id @default(cuid())
+  shipdayOrderId       String      @unique
+  branchId             String
+  driverId             String?
+  orderNumber          String?
+  deliveryValue        Int         @default(0)
+  companyAmount        Int         @default(0)
+  customerName         String?
+  customerAddress      String?
+  status               String
+  deliveredAt          DateTime?
+  rawData              Json?
+  clientId             String?
+  addToClientDebt      Boolean     @default(false)
+  createdAt            DateTime    @default(now())
 
   branch Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
   driver Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
@@ -448,50 +448,50 @@ model MonthlyClose {
 // ============================================================
 
 model Client {
-  payments ClientDebtPayment[]
-  id          String   @id @default(cuid())
+  payments    ClientDebtPayment[]
+  id          String              @id @default(cuid())
   name        String
   phone       String?
   email       String?
   address     String?
   notes       String?
-  pendingDebt Int      @default(0)
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  pendingDebt Int                 @default(0)
+  active      Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
 
   debts  ClientDebt[]
   orders ShipdayOrder[]
 }
 
 model ClientDebt {
-  sourceOrderId String? @unique
-  sourceOrder ShipdayOrder? @relation(fields: [sourceOrderId], references: [id], onDelete: Restrict)
-  payments ClientDebtPayment[]
-  id            String    @id @default(cuid())
-  clientId      String
-  description   String
-  amount        Int
+  sourceOrderId  String?             @unique
+  sourceOrder    ShipdayOrder?       @relation(fields: [sourceOrderId], references: [id], onDelete: Restrict)
+  payments       ClientDebtPayment[]
+  id             String              @id @default(cuid())
+  clientId       String
+  description    String
+  amount         Int
   // Medio del que SALIÓ el dinero al crear la deuda (préstamo/adelanto al cliente).
   // Cuando está definido, el saldo esperado descuenta `amount` de ese medio al
   // crearse la deuda y lo vuelve a sumar (paidCash/paidBank) al cobrarse — neto cero
   // al saldarse. Nulo = deuda sin desembolso de caja (p. ej. domicilio a crédito):
   // no descuenta al crear, solo suma como ingreso al cobrarse.
-  medium        Medium?
-  paid          Boolean   @default(false)
-  paidAt        DateTime?
-  paidAmount    Int?
-  paidCash      Int       @default(0)
-  paidBank      Int       @default(0)
-  createdBy     String?
-  createdByName String?
-  deviceId      String? // PC (Device.id) que creó la deuda
-  deviceName    String? // nombre del PC al crearla (snapshot)
-  paidBy        String?
-  paidByName    String?
+  medium         Medium?
+  paid           Boolean             @default(false)
+  paidAt         DateTime?
+  paidAmount     Int?
+  paidCash       Int                 @default(0)
+  paidBank       Int                 @default(0)
+  createdBy      String?
+  createdByName  String?
+  deviceId       String? // PC (Device.id) que creó la deuda
+  deviceName     String? // nombre del PC al crearla (snapshot)
+  paidBy         String?
+  paidByName     String?
   paidDeviceId   String? // PC que registró el cobro
   paidDeviceName String? // nombre del PC al cobrar (snapshot)
-  createdAt     DateTime  @default(now())
+  createdAt      DateTime            @default(now())
 
   client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
@@ -567,6 +567,11 @@ model ShiftClose {
   editedAt       DateTime?
   closedAt       DateTime  @default(now())
   locked         Boolean   @default(true) // bloqueado al registrarse; modificarlo requiere EditRequest
+  /// D7 (14-oct-2026): correcciones aprobadas DESPUÉS del cierre sobre dinero de este día
+  /// (mes abierto). Cada una: { requestId, requestType, entityType, entityId, description,
+  /// cashDelta, bankDelta, approvedBy, approvedByName, approvedAt }. El conteo original
+  /// (totalCounted/totalExpected/difference) nunca se modifica.
+  corrections    Json      @default("[]")
 
   @@unique([date, shift])
   @@index([date])
@@ -710,22 +715,38 @@ model ActivityLog {
 
 // Un abono es un evento fechado; los acumulados de ClientDebt son solo un resumen.
 model ClientDebtPayment {
-  id String @id @default(cuid())
-  debtId String
-  clientId String
-  description String
-  paidAmount Int
-  paidCash Int @default(0)
-  paidBank Int @default(0)
-  paidAt DateTime @default(now())
-  paidBy String?
-  paidByName String?
-  paidDeviceId String?
-  paidDeviceName String?
-  legacyAggregate Boolean @default(false)
-  debt ClientDebt @relation(fields: [debtId], references: [id], onDelete: Restrict)
-  client Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  id              String     @id @default(cuid())
+  debtId          String
+  clientId        String
+  description     String
+  paidAmount      Int
+  paidCash        Int        @default(0)
+  paidBank        Int        @default(0)
+  paidAt          DateTime   @default(now())
+  paidBy          String?
+  paidByName      String?
+  paidDeviceId    String?
+  paidDeviceName  String?
+  legacyAggregate Boolean    @default(false)
+  debt            ClientDebt @relation(fields: [debtId], references: [id], onDelete: Restrict)
+  client          Client     @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
   @@index([debtId])
   @@index([clientId])
   @@index([paidAt])
+}
+
+/// Auditoría de la migración F14 (14-oct-2026): separación de la base (libro BaseTransaction)
+/// y la cuenta de comisiones (Driver.pendingDebt/creditAmount). Un registro por domiciliario
+/// con base en el libro: saldos antes/después y residuo regularizado (sin movimiento de caja).
+model F14DriverMigration {
+  driverId           String   @id
+  pendingDebtBefore  Int
+  creditAmountBefore Int
+  baseLedger         Int
+  baseShown          Int
+  residueRegularized Int
+  pendingDebtAfter   Int
+  creditAmountAfter  Int
+  migratedAt         DateTime @default(now())
 }

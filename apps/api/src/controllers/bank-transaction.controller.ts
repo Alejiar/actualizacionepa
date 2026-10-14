@@ -24,6 +24,6 @@ export async function summary(req: Request, res: Response) {
 }
 
 export async function applyToDriver(req: Request, res: Response) {
-  const { driverId } = req.body;
-  res.json(await driverSvc.applyBankToDriver(req.params.id, driverId, getActor(req)));
+  const { driverId, baseAmount } = req.body;
+  res.json(await driverSvc.applyBankToDriver(req.params.id, driverId, getActor(req), baseAmount));
 }

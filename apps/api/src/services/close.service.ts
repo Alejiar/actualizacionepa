@@ -2,7 +2,7 @@ import { assertMoney } from "../lib/money-validation";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { conflict } from "../lib/errors";
 import { bogotaMonthRange as monthRange } from "../lib/date-range";
-import { reconcileBasePending } from "../lib/base-balance";
+import { basePendingByDriver } from "../lib/base-balance";
 import { financialNow } from "../lib/period-guard";
 
 /**
@@ -59,75 +59,48 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     prisma.hourlyClient.findMany({ where: { pendingDebt: { gt: 0 } }, select: { id: true, name: true, pendingDebt: true }, orderBy: { pendingDebt: "desc" }, take: 20 }),
   ]);
 
-  // ── BASES: dos alcances con el MISMO criterio (reconcileBasePending contra la deuda neta viva) ──
-  // El saldo de base (entrega − pago) es un registro paralelo que puede quedar POR ENCIMA de la
-  // deuda neta real (los pagos se reparten entre base y comisión y la deuda tiene piso en 0), así
-  // que un domiciliario ya saldado puede conservar un residuo de libro. La verdad única es la
-  // posición neta (pendingDebt): quien no debe nada NO debe base → min(saldoBase, deudaNeta).
-  //
-  // (1) Libro COMPLETO (todos los tiempos). Sirve para: (a) separar "base" de "comisión" dentro de
-  //     la deuda neta viva (abajo), y (b) el proyector de cierre, donde "plata física fuera" es
-  //     TODA la base sin devolver, no solo la del mes (`diffAllTime`).
-  const baseBalanceByDriver = new Map<string, number>();
-  for (const row of driversWithBase) {
-    const cur = baseBalanceByDriver.get(row.driverId) ?? 0;
-    const amt = row._sum.amount ?? 0;
-    baseBalanceByDriver.set(row.driverId, cur + (row.type === "entrega" ? amt : -amt));
-  }
-  // (2) Libro DEL MES seleccionado. Es lo que muestran el indicador "Diferencia Bases", la tarjeta
-  //     del cierre y el Excel. Antes el panel usaba el libro COMPLETO, y por eso un mes ya cerrado y
-  //     limpio mostraba base pendiente de OTROS meses (incoherente con la tarjeta, que sí es del mes
-  //     vía getMonthBasePendingReconciled). Ahora panel/tarjeta/Excel usan el MISMO criterio.
-  const monthBaseGrp = await prisma.baseTransaction.groupBy({
-    by: ["driverId", "type"], _sum: { amount: true }, where: baseWhere,
-  });
-  const monthBaseByDriver = new Map<string, number>();
-  for (const row of monthBaseGrp) {
-    const cur = monthBaseByDriver.get(row.driverId) ?? 0;
-    const amt = row._sum.amount ?? 0;
-    monthBaseByDriver.set(row.driverId, cur + (row.type === "entrega" ? amt : -amt));
-  }
-  // Deuda neta viva de todo domiciliario con base > 0 (histórica o del mes), para reconciliar ambos.
-  const baseDriverIds = [...new Set([
-    ...[...baseBalanceByDriver.entries()].filter(([, b]) => b > 0).map(([id]) => id),
-    ...[...monthBaseByDriver.entries()].filter(([, b]) => b > 0).map(([id]) => id),
-  ])];
-  const baseDriverRows = baseDriverIds.length
-    ? await prisma.driver.findMany({ where: { id: { in: baseDriverIds } }, select: { id: true, name: true, pendingDebt: true } })
-    : [];
-  const netDebtById = new Map(baseDriverRows.map(d => [d.id, d.pendingDebt] as const));
-  const nameById = new Map(baseDriverRows.map(d => [d.id, d.name] as const));
-  // All-time (para el proyector de cierre). Ledger ≤ 0 reconcilia a 0, así que sumar todos es seguro.
-  const basePendingAllTime = [...baseBalanceByDriver.entries()]
-    .reduce((s, [id, ledger]) => s + reconcileBasePending(ledger, netDebtById.get(id) ?? 0), 0);
-  // Del mes (indicador "Diferencia Bases" + lista de quién debe + Excel).
-  const pendingBaseDrivers = [...monthBaseByDriver.entries()]
-    .map(([id, ledger]) => ({ id, name: nameById.get(id) ?? "?", pendingDebt: reconcileBasePending(ledger, netDebtById.get(id) ?? 0) }))
+  // ── BASES (F14, decisión del dueño 14-oct-2026) ──────────────────────────────────────────
+  // La base es una cuenta propia, independiente de las comisiones y del crédito:
+  //   pendiente al cierre del mes = saldo anterior + entregadas en el mes − devueltas en el mes
+  // (por domiciliario, con piso 0 solo ante registros históricos anómalos). Nada se "concilia"
+  // contra la deuda: un crédito por comisiones ya no oculta base sin devolver.
+  void driversWithBase;
+  const branchBase = branchId ? { branchId } : {};
+  const [prevByDriver, endByDriver, nowByDriver] = await Promise.all([
+    basePendingByDriver(prisma, { before: range.gte, ...branchBase }),
+    basePendingByDriver(prisma, { before: new Date(range.lte.getTime() + 1), ...branchBase }),
+    basePendingByDriver(prisma, branchBase),
+  ]);
+  const sumMap = (m: Map<string, number>) => [...m.values()].reduce((t, v) => t + v, 0);
+  const basesPrevious = sumMap(prevByDriver);
+  const basePendingReconciled = sumMap(endByDriver);      // "Diferencia Bases" del mes (F14)
+  const basePendingAllTime = sumMap(nowByDriver);         // base viva hoy (proyector de cierre)
+  const baseIds = [...new Set([...endByDriver.keys(), ...nowByDriver.keys()])];
+  const nameRows = baseIds.length ? await prisma.driver.findMany({ where: { id: { in: baseIds } }, select: { id: true, name: true } }) : [];
+  const nameById = new Map(nameRows.map(d => [d.id, d.name] as const));
+  const pendingBaseDrivers = [...endByDriver.entries()]
+    .map(([id, v]) => ({ id, name: nameById.get(id) ?? "?", pendingDebt: v }))
     .filter(d => d.pendingDebt > 0)
     .sort((a, b) => b.pendingDebt - a.pendingDebt)
     .slice(0, 20);
-  const basePendingReconciled = [...monthBaseByDriver.entries()]
-    .reduce((s, [id, ledger]) => s + reconcileBasePending(ledger, netDebtById.get(id) ?? 0), 0);
 
-  // COMISIONES: deuda del domiciliario que NO es base (la comisión que deben por domicilios)
+  // COMISIONES (F14): `pendingDebt` es solo deuda por comisiones; `creditAmount`, crédito a favor.
   const driversWithDebt = await prisma.driver.findMany({
-    where: { pendingDebt: { gt: 0 }, ...(branchId ? { branchId } : {}) },
-    select: { id: true, name: true, pendingDebt: true },
+    where: { OR: [{ pendingDebt: { gt: 0 } }, { creditAmount: { gt: 0 } }], ...(branchId ? { branchId } : {}) },
+    select: { id: true, name: true, pendingDebt: true, creditAmount: true },
   });
   const pendingCommissionDrivers = driversWithDebt
-    .map(d => ({ id: d.id, name: d.name, pendingDebt: d.pendingDebt - Math.max(0, baseBalanceByDriver.get(d.id) ?? 0) }))
     .filter(d => d.pendingDebt > 0)
-    .sort((a, b) => b.pendingDebt - a.pendingDebt)
-    ;
+    .map(d => ({ id: d.id, name: d.name, pendingDebt: d.pendingDebt }))
+    .sort((a, b) => b.pendingDebt - a.pendingDebt);
   const commissionPending = pendingCommissionDrivers.reduce((s, d) => s + d.pendingDebt, 0);
-  const totalDriverDebt = driversWithDebt.reduce((s,d) => s+d.pendingDebt,0);
-  // Por driver: bases del mes aplicables, remanente histórico y comisión viva.
-  const monthlyLiveBase = [...baseBalanceByDriver.entries()].reduce((sum,[id,ledger]) => {
-    const all = reconcileBasePending(ledger,netDebtById.get(id) ?? 0);
-    return sum+Math.min(all,reconcileBasePending(monthBaseByDriver.get(id) ?? 0,netDebtById.get(id) ?? 0));
-  },0);
-  const debtReconciliation = { total:totalDriverDebt, basesCurrentMonth:monthlyLiveBase,
-    basesPrevious:basePendingAllTime-monthlyLiveBase, basesAllTime:basePendingAllTime, commission:commissionPending };
+  const creditTotal = driversWithDebt.reduce((s, d) => s + (d.creditAmount ?? 0), 0);
+  // Total INFORMATIVO (no es otra deuda): base viva + comisión − crédito.
+  const debtReconciliation = {
+    total: basePendingAllTime + commissionPending - creditTotal,
+    basesCurrentMonth: basePendingReconciled - basesPrevious,
+    basesPrevious, basesAllTime: basePendingAllTime, commission: commissionPending, credit: creditTotal,
+  };
 
   const gastosEf = gastosEfAgg._sum.amount ?? 0;
   const gastosBk = gastosBkAgg._sum.amount ?? 0;
@@ -202,8 +175,8 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     // diff = base sin devolver DEL MES (indicador/tarjeta/Excel, coherente entre sí).
     // diffAllTime = base sin devolver de TODOS los tiempos (solo la usa el proyector de cierre para
     // la plata física realmente fuera). Ver getMonthCloseProjection.
-    bases: { given: basesGiven, returned: basesPaid, diff: basesDiff, diffAllTime: basePendingAllTime, ok: basesDiff === 0, pendingDrivers: pendingBaseDrivers },
-    commission: { pending: commissionPending, ok: commissionPending === 0, pendingDrivers: pendingCommissionDrivers },
+    bases: { previous: basesPrevious, given: basesGiven, returned: basesPaid, diff: basesDiff, diffAllTime: basePendingAllTime, ok: basesDiff === 0, pendingDrivers: pendingBaseDrivers },
+    commission: { pending: commissionPending, credit: creditTotal, ok: commissionPending === 0, pendingDrivers: pendingCommissionDrivers },
     transfers: { ingresos: bankIng, egresos: bankEgr, diff: transferDiff, ok: pendingTransferMovs.length === 0, pendingItems: transferPendingItems },
     clientDebt: { generated: debtsGen, paid: debtsPaid, balance: clientDebtBalance, normal: clientDebtNormal, hourly: clientDebtHourly, ok: clientDebtBalance === 0, pendingClients },
     netProfit,
@@ -421,21 +394,10 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
  * fantasmas como los $65.400 de Andrés en la tarjeta del cierre. Ver lib/base-balance.
  */
 export async function getMonthBasePendingReconciled(month: string, branchId?: string | null): Promise<number> {
+  // F14: base pendiente PURA al final del mes (saldo anterior + entregadas − devueltas).
   const range = monthRange(month);
-  const baseWhere = branchId ? { branchId, date: range } : { date: range };
-  const grp = await prisma.baseTransaction.groupBy({ by: ["driverId", "type"], _sum: { amount: true }, where: baseWhere });
-  const ledgerByDriver = new Map<string, number>();
-  for (const row of grp) {
-    const cur = ledgerByDriver.get(row.driverId) ?? 0;
-    ledgerByDriver.set(row.driverId, cur + (row.type === "entrega" ? (row._sum.amount ?? 0) : -(row._sum.amount ?? 0)));
-  }
-  const ids = [...ledgerByDriver.keys()];
-  if (!ids.length) return 0;
-  const drivers = await prisma.driver.findMany({ where: { id: { in: ids } }, select: { id: true, pendingDebt: true } });
-  const netById = new Map(drivers.map(d => [d.id, d.pendingDebt]));
-  let total = 0;
-  for (const [id, ledger] of ledgerByDriver) total += reconcileBasePending(ledger, netById.get(id) ?? 0);
-  return total;
+  const m = await basePendingByDriver(prisma, { before: new Date(range.lte.getTime() + 1), ...(branchId ? { branchId } : {}) });
+  return [...m.values()].reduce((t, v) => t + v, 0);
 }
 
 export async function listCloses(branchId?: string) {

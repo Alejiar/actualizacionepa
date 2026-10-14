@@ -28,6 +28,10 @@ async function main() {
   const today = todayBogota();
   const yesterdayNoon = new Date(new Date(today + "T12:00:00-05:00").getTime() - 86400000);
   const yesterday = toBogotaDateStr(yesterdayNoon);
+  // Decisión del dueño (14-oct-2026): un pedido de un DÍA cerrado se carga; solo un MES cerrado lo
+  // bloquea. Las regresiones SYNC usan por eso un pedido del mes anterior ya cerrado.
+  const prevMonthNoon = new Date(new Date(today.slice(0, 7) + "-01T12:00:00-05:00").getTime() - 86400000);
+  const closePrevMonth = () => closes.closeMonth(toBogotaDateStr(prevMonthNoon).slice(0, 7), undefined, 100000, 100000);
   const realFetch = globalThis.fetch;
   const blocked = (async (input: any, init: any) => { if (!String(input).startsWith("http://127.0.0.1:")) throw Error("Red externa bloqueada"); return realFetch(input, init); }) as any;
   globalThis.fetch = blocked;
@@ -121,46 +125,46 @@ async function main() {
       assert.equal(b.syncStatus, "error"); assert.equal(await p.shipdayOrder.count(), 0);
     });
     await check("SYNC01", "Un pedido de un día cerrado no impide cargar los pedidos válidos del mismo ciclo", async f => {
-      // Ayer ya tiene Cierre; el sondeo de recuperación (3 días) trae primero un rezagado de
-      // ayer y después un pedido de hoy. El de hoy (período abierto) DEBE cargarse.
-      await p.shiftClose.create({ data: { date: yesterday, shift: "close", denominations: { bills: [], coins: [] }, totalCounted: 100000, totalExpected: 100000, difference: 0 } });
+      // El mes anterior está cerrado; el sondeo trae primero un rezagado de ese mes y después
+      // un pedido de hoy. El de hoy (período abierto) DEBE cargarse sin abortar el ciclo.
+      await closePrevMonth();
       const before = await dash.getExpectedBalancesForDate(yesterday);
-      mockShipday([order("rezagado-ayer", 10000, yesterdayNoon), order("hoy", 20000, new Date())]);
+      mockShipday([order("rezagado-ayer", 10000, prevMonthNoon), order("hoy", 20000, new Date())]);
       let r: any, err: any;
-      try { r = await branchSvc.syncBranch(branch.id, { forceDrivers: true, windowDays: 3 }); } catch (e) { err = e; }
+      try { r = await branchSvc.syncBranch(branch.id, { forceDrivers: true, windowDays: 40 }); } catch (e) { err = e; }
       f.error = err ? String(err.message).slice(0, 120) : null; f.partial = r?.partial; f.mensaje = r?.error;
       f.pedidos = (await p.shipdayOrder.findMany({ select: { shipdayOrderId: true } })).map((o: any) => o.shipdayOrderId);
       f.deuda = (await p.driver.findUniqueOrThrow({ where: { id: driver.id } })).pendingDebt;
-      assert.deepEqual(f.pedidos, ["hoy"], "el pedido abierto de hoy debe cargarse y el del día cerrado no");
+      assert.deepEqual(f.pedidos, ["hoy"], "el pedido abierto de hoy debe cargarse y el del mes cerrado no");
       assert.equal(f.deuda, 6000, "30 % de 20.000");
       assert.equal(r.partial, true, "el ciclo debe quedar marcado incompleto");
       assert.match(r.error, /rezagado-ayer/, "el pedido omitido debe quedar identificado");
       assert.equal((await p.branch.findUniqueOrThrow({ where: { id: branch.id } })).syncStatus, "error");
-      assert.deepEqual(await dash.getExpectedBalancesForDate(yesterday), before, "el día cerrado no cambia");
+      assert.deepEqual(await dash.getExpectedBalancesForDate(yesterday), before, "la caja no cambia");
     });
     await check("SYNC02", "El pedido omitido se reintenta en el siguiente ciclo y nunca se duplica el válido", async f => {
-      await p.shiftClose.create({ data: { date: yesterday, shift: "close", denominations: { bills: [], coins: [] }, totalCounted: 100000, totalExpected: 100000, difference: 0 } });
-      mockShipday([order("rezagado-ayer", 10000, yesterdayNoon), order("hoy", 20000, new Date())]);
-      await branchSvc.syncBranch(branch.id, { forceDrivers: true, windowDays: 3 }).catch(() => null);
-      const r2 = await branchSvc.syncBranch(branch.id, { windowDays: 3 }).catch((e: any) => ({ thrown: e.message }));
+      await closePrevMonth();
+      mockShipday([order("rezagado-ayer", 10000, prevMonthNoon), order("hoy", 20000, new Date())]);
+      await branchSvc.syncBranch(branch.id, { forceDrivers: true, windowDays: 40 }).catch(() => null);
+      const r2 = await branchSvc.syncBranch(branch.id, { windowDays: 40 }).catch((e: any) => ({ thrown: e.message }));
       f.r2 = r2;
       assert.equal(await p.shipdayOrder.count({ where: { shipdayOrderId: "hoy" } }), 1);
       assert.equal((await p.driver.findUniqueOrThrow({ where: { id: driver.id } })).pendingDebt, 6000);
       assert.equal(await p.shipdayOrder.count({ where: { shipdayOrderId: "rezagado-ayer" } }), 0);
     });
     await check("SYNC03", "Reconciliación profunda: igual, omite el cerrado y carga el abierto", async f => {
-      await p.shiftClose.create({ data: { date: yesterday, shift: "close", denominations: { bills: [], coins: [] }, totalCounted: 100000, totalExpected: 100000, difference: 0 } });
+      await closePrevMonth();
       globalThis.fetch = (async (input: any, init: any) => {
         const s = String(input);
         if (s.startsWith("http://127.0.0.1:")) return realFetch(input, init);
         if (s.startsWith("https://api.shipday.com/orders")) return new Response(JSON.stringify([
-          { orderId: "rec-ayer", orderNumber: "1", orderStatus: { orderState: "DELIVERED" }, deliveryFee: 10000, costing: { deliveryFee: 10000 }, assignedCarrier: { id: 7001 }, activityLog: { deliveryTime: yesterdayNoon.toISOString() }, deliveryTime: yesterdayNoon.toISOString() },
+          { orderId: "rec-ayer", orderNumber: "1", orderStatus: { orderState: "DELIVERED" }, deliveryFee: 10000, costing: { deliveryFee: 10000 }, assignedCarrier: { id: 7001 }, activityLog: { deliveryTime: prevMonthNoon.toISOString() }, deliveryTime: prevMonthNoon.toISOString() },
           { orderId: "rec-hoy", orderNumber: "2", orderStatus: { orderState: "DELIVERED" }, deliveryFee: 20000, costing: { deliveryFee: 20000 }, assignedCarrier: { id: 7001 }, activityLog: { deliveryTime: new Date().toISOString() }, deliveryTime: new Date().toISOString() },
         ]));
         throw Error("Red externa bloqueada");
       }) as any;
       let r: any, err: any;
-      try { r = await branchSvc.reconcileBranch(branch.id, yesterday, today); } catch (e) { err = e; }
+      try { r = await branchSvc.reconcileBranch(branch.id, toBogotaDateStr(prevMonthNoon), today); } catch (e) { err = e; }
       f.error = err ? String(err.message).slice(0, 160) : null; f.r = r;
       f.pedidos = (await p.shipdayOrder.findMany({ select: { shipdayOrderId: true } })).map((o: any) => o.shipdayOrderId);
       assert.equal(err, undefined, "la reconciliación no debe abortar por un pedido cerrado");

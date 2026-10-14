@@ -78,8 +78,10 @@ export default function DomiciliariosShipdayPage() {
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [todayOrders]);
 
+  // F14: comisiones y base sin devolver son cuentas separadas.
   const totalDebt = drivers.reduce((s, d) => s + d.pendingDebt, 0);
-  const withDebt = drivers.filter(d => d.pendingDebt > 0);
+  const totalBase = drivers.reduce((s, d) => s + (d.basePending ?? 0), 0);
+  const withDebt = drivers.filter(d => d.pendingDebt > 0 || (d.basePending ?? 0) > 0);
   const todayTotal = todayOrders.reduce((s, o) => s + o.deliveryValue, 0);
   const todayCompany = todayOrders.reduce((s, o) => s + o.companyAmount, 0);
 
@@ -118,7 +120,7 @@ export default function DomiciliariosShipdayPage() {
 
       {/* Top KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KPI label="Deuda total pendiente" value={formatCOP(totalDebt)} icon={<AlertCircle className="h-4 w-4" />} highlight={totalDebt > 0} />
+        <KPI label={`Deuda comisiones · base ${formatCOP(totalBase)}`} value={formatCOP(totalDebt)} icon={<AlertCircle className="h-4 w-4" />} highlight={totalDebt > 0} />
         <KPI label={`Pedidos ${isToday ? "hoy" : "ese día"}`} value={String(todayOrders.length)} icon={<Package className="h-4 w-4" />} />
         <KPI label={`Valor entregado ${isToday ? "hoy" : "ese día"}`} value={formatCOP(todayTotal)} icon={<Banknote className="h-4 w-4" />} />
         <KPI label={`% empresa ${isToday ? "hoy" : "ese día"}`} value={formatCOP(todayCompany)} icon={<Wallet className="h-4 w-4" />} />
@@ -183,7 +185,8 @@ export default function DomiciliariosShipdayPage() {
                   <th className="text-left px-5 py-3 hidden md:table-cell">Sucursal</th>
                   <th className="text-right px-5 py-3">Pedidos {isToday ? "hoy" : "ese día"}</th>
                   <th className="text-right px-5 py-3 hidden sm:table-cell">$ entregado {isToday ? "hoy" : "ese día"}</th>
-                  <th className="text-right px-5 py-3">Deuda pendiente</th>
+                  <th className="text-right px-5 py-3">Comisiones</th>
+                  <th className="text-right px-5 py-3">Base</th>
                   <th className="px-5 py-3" />
                 </tr>
               </thead>
@@ -209,6 +212,9 @@ export default function DomiciliariosShipdayPage() {
                       <td className={`px-5 py-3 text-right font-black tnum ${d.pendingDebt > 0 ? "text-red-500" : "text-muted-foreground"}`}>
                         {d.pendingDebt > 0 ? formatCOP(d.pendingDebt) : "—"}
                       </td>
+                      <td className={`px-5 py-3 text-right font-bold tnum ${(d.basePending ?? 0) > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
+                        {(d.basePending ?? 0) > 0 ? formatCOP(d.basePending ?? 0) : "—"}
+                      </td>
                       <td className="px-5 py-3 text-right">
                         <span className="text-xs text-primary font-bold">Ver / Pagar →</span>
                       </td>
@@ -217,7 +223,7 @@ export default function DomiciliariosShipdayPage() {
                 })}
                 {drivers.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="text-center py-12 text-muted-foreground">
+                    <td colSpan={7} className="text-center py-12 text-muted-foreground">
                       No hay domiciliarios. Sincroniza una sucursal primero.
                     </td>
                   </tr>

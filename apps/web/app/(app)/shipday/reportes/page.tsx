@@ -190,9 +190,10 @@ function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; mo
       </div>
 
       <div className="rounded-xl border bg-card p-4 space-y-2">
-        <p className="font-bold">Deuda actual de domiciliarios: {fmt(report.debtReconciliation.total)}</p>
-        <p className="text-sm text-muted-foreground">Bases pendientes originadas en el mes: {fmt(report.debtReconciliation.basesCurrentMonth)} · Bases de meses anteriores: {fmt(report.debtReconciliation.basesPrevious)} · Comisiones pendientes: {fmt(report.debtReconciliation.commission)}</p>
-        <p className="text-xs text-muted-foreground">Estos saldos actuales suman lo mostrado en Deudas. Los indicadores del período conservan la actividad del mes seleccionado.</p>
+        {/* F14: base y comisiones son cuentas separadas; el total es solo informativo. */}
+        <p className="font-bold">Domiciliarios hoy — comisiones: {fmt(report.debtReconciliation.commission)} · base sin devolver: {fmt(report.debtReconciliation.basesAllTime)}{(report.debtReconciliation.credit ?? 0) > 0 ? ` · crédito a su favor: ${fmt(report.debtReconciliation.credit ?? 0)}` : ""}</p>
+        <p className="text-sm text-muted-foreground">Bases del mes: saldo anterior {fmt(report.bases.previous ?? report.debtReconciliation.basesPrevious)} + entregadas {fmt(report.bases.given)} − devueltas {fmt(report.bases.returned)} = pendiente al cierre del mes {fmt(report.bases.diff)}</p>
+        <p className="text-xs text-muted-foreground">Total informativo (comisión + base − crédito): {fmt(report.debtReconciliation.total)}. No es otra deuda: la base y las comisiones se cobran por separado.</p>
       </div>
       {/* Indicadores que deben cuadrar — con enlaces directos al descuadre */}
       <div className="space-y-2">
@@ -200,7 +201,7 @@ function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; mo
           label="Diferencia Bases"
           ok={report.bases.ok}
           value={report.bases.diff}
-          detail={!report.bases.ok ? `Base aún en poder de domiciliarios (conciliada con su deuda). En el mes: entregadas ${fmt(report.bases.given)} · devueltas ${fmt(report.bases.returned)}` : undefined}
+          detail={!report.bases.ok ? `Base aún en poder de domiciliarios al cierre del mes. Saldo anterior ${fmt(report.bases.previous ?? 0)} + entregadas ${fmt(report.bases.given)} − devueltas ${fmt(report.bases.returned)}` : undefined}
           items={report.bases.pendingDrivers.map(d => ({ id: d.id, label: d.name, amount: d.pendingDebt }))}
           linkHref="/shipday/bases"
           linkLabel="Ir a Bases →"

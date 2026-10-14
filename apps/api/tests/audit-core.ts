@@ -124,10 +124,13 @@ async function main() {
   {
     const d = await newDriver("R5");
     const b = await baseSvc.giveBase(d.id, { cashAmount: 50000 });   // debe 50.000
-    await driverSvc.registerPayment(d.id, 60000, "cash");             // crédito 10.000
-    await approveEdit("BaseTransaction", b.id, { amount: { old: "50000", new: "40000" } }); // −10.000
+    // F14 (decisión del dueño 14-oct-2026): sin reparto explícito el pago va a comisión (crédito
+    // 60.000) y la base es otra cuenta; editar la base no toca comisión/crédito. La regla
+    // protegida (nunca pendingDebt negativo) se conserva.
+    await driverSvc.registerPayment(d.id, 60000, "cash");             // crédito 60.000 (F14)
+    await approveEdit("BaseTransaction", b.id, { amount: { old: "50000", new: "40000" } }); // base 40.000
     report("R5", "Editar monto de base (vía solicitud) con crédito a favor deja pendingDebt negativo",
-      await state(d.id), { pendingDebt: 0, creditAmount: 20000 });
+      await state(d.id), { pendingDebt: 0, creditAmount: 60000 });
   }
   // R6 — Pedido manual con crédito a favor: incremento crudo, no netea.
   {
@@ -146,13 +149,16 @@ async function main() {
     await webhookOrder(d, 100000, new Date("2026-09-20T12:00:00-05:00"),reportBranch.id);
     const rep = await closeSvc.getMonthlyReport("2026-09", reportBranch.id);
     const baseMes = rep.debtReconciliation.basesPrevious;
-    if(rep.bases.diff !== 0 || rep.debtReconciliation.basesCurrentMonth !== 0) throw Error("Se cambió el alcance del indicador mensual");
-    if(rep.debtReconciliation.total !== rep.debtReconciliation.basesAllTime + rep.debtReconciliation.commission) throw Error("Reporte no concilia");
+    // F14 (decisión del dueño 14-oct-2026): "Diferencia bases" del mes = saldo anterior +
+    // entregadas − devueltas (antes solo el libro del mes; la regla protegida aquí era esa).
+    if(rep.bases.diff !== 50000 || rep.bases.previous !== 50000 || rep.debtReconciliation.basesCurrentMonth !== 0) throw Error("Indicador mensual de bases fuera de la fórmula F14");
+    if(rep.debtReconciliation.total !== rep.debtReconciliation.basesAllTime + rep.debtReconciliation.commission - (rep.debtReconciliation.credit ?? 0)) throw Error("Reporte no concilia");
     const comision = rep.commission.pendingDrivers.find((x: { id: string }) => x.id === d.id)?.pendingDebt ?? 0;
     const st = await state(d.id);
+    // F14: la deuda en Deudas es solo comisión; base y comisión son cuentas separadas y la suma es informativa.
     report("R7", "Panel de Reportes (sept) no muestra la base de agosto: base+comisión ≠ deuda en Deudas",
-      { deudaEnDeudas: st.pendingDebt, baseEnPanelMes: baseMes, comisionEnPanel: comision, sumaPanel: baseMes + comision },
-      { deudaEnDeudas: 80000, baseEnPanelMes: 50000, comisionEnPanel: 30000, sumaPanel: 80000 });
+      { comisionEnDeudas: st.pendingDebt, baseEnPanelMes: baseMes, comisionEnPanel: comision, sumaPanel: baseMes + comision },
+      { comisionEnDeudas: 30000, baseEnPanelMes: 50000, comisionEnPanel: 30000, sumaPanel: 80000 });
   }
   // R8 — "Cargar pedidos desde hoy": recalcula por fórmula y crea crédito fantasma con pagos previos.
   {

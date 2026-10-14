@@ -1,14 +1,16 @@
 "use client";
+import { toast } from "sonner";
 
 import { useState, useMemo, useEffect } from "react";
 import { useDay } from "@/lib/day-context";
-import { formatCOP, prettyDate } from "@/lib/format";
+import { formatCOP, prettyDate, todayBogota } from "@/lib/format";
 import * as api from "@/lib/sd-api";
 import { Calendar, Table as TableIcon, X } from "lucide-react";
 
 export default function HistoryPage() {
   const [view, setView] = useState<"calendar" | "table">("calendar");
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  // Mes actual en hora de Bogotá (no UTC: después de las 19:00 del último día daba el mes siguiente).
+  const [month, setMonth] = useState(() => todayBogota().slice(0, 7));
   const { setDate } = useDay();
   const [openDate, setOpenDate] = useState<string | null>(null);
   // Resúmenes REALES por día del mes visible (saldos autoritativos: los mismos que la
@@ -194,6 +196,83 @@ function DayDetail({ date }: { date: string }) {
       <div className="border-t border-border my-1" />
 
       <Detail label="📈 Ganancia de la empresa" value={summary.netProfit} tone={summary.netProfit >= 0 ? "cash" : "danger"} big />
+
+      {summary.close && <CloseCorrections date={date} close={summary.close} />}
+    </div>
+  );
+}
+
+/**
+ * D7: el Cierre conserva su conteo ORIGINAL; cualquier corrección aprobada después se muestra
+ * aparte, con el esperado corregido. Un día cerrado solo se corrige por solicitud aprobada.
+ */
+function CloseCorrections({ date, close }: { date: string; close: NonNullable<api.DaySummary["close"]> }) {
+  const corr = close.corrections ?? [];
+  const cashDelta = corr.reduce((t, c) => t + (c.cashDelta ?? 0), 0);
+  const bankDelta = corr.reduce((t, c) => t + (c.bankDelta ?? 0), 0);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ type: "ingreso", medium: "cash", amount: "", description: "", reason: "" });
+  const [sending, setSending] = useState(false);
+  async function send() {
+    const amount = parseInt(form.amount.replace(/\D/g, "") || "0");
+    if (!amount || !form.description.trim() || !form.reason.trim()) { toast.error("Completa monto, descripción y motivo."); return; }
+    setSending(true);
+    try {
+      await api.createEditRequest({
+        requestType: "create", entityType: "BankTransaction", entityId: "nuevo", entityLabel: "",
+        changes: { date, type: form.type, medium: form.medium, amount, description: form.description.trim() },
+        reason: form.reason.trim(),
+      });
+      toast.success("Solicitud enviada. Un administrador debe aprobarla.");
+      setOpen(false); setForm({ type: "ingreso", medium: "cash", amount: "", description: "", reason: "" });
+    } catch (e) { toast.error(String(e)); }
+    setSending(false);
+  }
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Cierre registrado (conteo original)</p>
+      <Detail label="💵 Esperado" value={close.totalExpected} />
+      <Detail label="💵 Contado" value={close.totalCounted} />
+      <Detail label="💵 Diferencia del cierre" value={close.difference} tone={close.difference === 0 ? "cash" : "danger"} />
+      {close.bankExpected != null && <Detail label="🏦 Esperado banco" value={close.bankExpected} />}
+      {close.bankCounted != null && <Detail label="🏦 Contado banco" value={close.bankCounted} />}
+      {corr.length > 0 && (
+        <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3 space-y-1">
+          <p className="text-xs font-bold text-amber-700">Correcciones aprobadas después del cierre ({corr.length})</p>
+          {corr.map(c => (
+            <div key={c.requestId + c.approvedAt} className="text-xs flex justify-between gap-2">
+              <span>{c.description} · {c.approvedByName ?? "admin"} · {new Date(c.approvedAt).toLocaleString("es-CO", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+              <span className="tnum font-bold">{c.cashDelta ? `💵 ${formatCOP(c.cashDelta)}` : ""} {c.bankDelta ? `🏦 ${formatCOP(c.bankDelta)}` : ""}</span>
+            </div>
+          ))}
+          <Detail label="💵 Esperado corregido" value={close.totalExpected + cashDelta} tone="cash" />
+          {close.bankExpected != null && <Detail label="🏦 Esperado banco corregido" value={close.bankExpected + bankDelta} tone="bank" />}
+          <p className="text-[11px] text-muted-foreground">El conteo original no cambia: lo contado ese día fue {formatCOP(close.totalCounted)}.</p>
+        </div>
+      )}
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="w-full text-xs py-2 rounded-xl border border-border font-bold hover:bg-secondary transition">
+          Solicitar agregar un movimiento olvidado a este día
+        </button>
+      ) : (
+        <div className="rounded-xl border border-border p-3 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <select aria-label="Tipo" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="px-2 py-2 rounded-lg border border-border bg-background text-xs">
+              <option value="ingreso">Ingreso</option><option value="egreso">Egreso</option>
+            </select>
+            <select aria-label="Medio" value={form.medium} onChange={e => setForm(f => ({ ...f, medium: e.target.value }))} className="px-2 py-2 rounded-lg border border-border bg-background text-xs">
+              <option value="cash">Efectivo</option><option value="bank">Banco</option>
+            </select>
+          </div>
+          <input aria-label="Monto" inputMode="numeric" placeholder="Monto" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value.replace(/\D/g, "") }))} className="w-full px-2 py-2 rounded-lg border border-border bg-background text-xs tnum" />
+          <input aria-label="Descripción" placeholder="Descripción" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} className="w-full px-2 py-2 rounded-lg border border-border bg-background text-xs" />
+          <input aria-label="Motivo" placeholder="Motivo de la corrección" value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} className="w-full px-2 py-2 rounded-lg border border-border bg-background text-xs" />
+          <div className="flex gap-2">
+            <button onClick={() => setOpen(false)} className="flex-1 text-xs py-2 rounded-lg border border-border">Cancelar</button>
+            <button onClick={send} disabled={sending} className="flex-1 text-xs py-2 rounded-lg bg-primary text-primary-foreground font-bold disabled:opacity-50">{sending ? "Enviando…" : "Enviar solicitud"}</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

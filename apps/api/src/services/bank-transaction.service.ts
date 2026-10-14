@@ -1,4 +1,4 @@
-import { applyDebtDelta, applyBankToDriver } from "./driver.service";
+import { applyDebtDelta, applyBankToDriver, revertDriverApplication } from "./driver.service";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
 import { badRequest, conflict, notFound } from "../lib/errors";
@@ -174,9 +174,15 @@ export async function remove(id: string) {
       //   debtApplied < 0 → egreso que pagó crédito (payCredit). Antes NO se marcaba, así que
       //     borrar el pago-crédito no devolvía el crédito al domiciliario (bug real Juan Sanabria).
       if (row.driverId && row.debtApplied !== 0) {
-        // Revertir por POSICIÓN NETA (deuda − crédito): `net + debtApplied` restaura pendingDebt o
-        // creditAmount según corresponda, para AMBOS signos, sin dejar crédito/deuda fantasma.
-        await applyDebtDelta(tx, row.driverId, row.debtApplied);
+        // F14: `debtApplied` es el TOTAL aplicado (comisión + base). La parte de base vuelve al
+        // libro de base al borrar sus BaseTransaction enlazadas (abajo); a la cuenta de
+        // comisiones solo se le revierte `debtApplied − base enlazada`, para AMBOS signos.
+        const linkWindow = { gte: new Date(row.date.getTime() - 5000), lte: new Date(row.date.getTime() + 5000) };
+        const linkedBase = row.debtApplied > 0 ? (await tx.baseTransaction.aggregate({
+          where: { driverId: row.driverId, type: "pago", notes: { startsWith: BANK_LINKED_BASE_PREFIX }, OR: [{ bankTransactionId: row.id }, { bankTransactionId: null, date: linkWindow }] },
+          _sum: { amount: true },
+        }))._sum.amount ?? 0 : 0;
+        await applyDebtDelta(tx, row.driverId, row.debtApplied - linkedBase);
         // Registros contables subsidiarios (base pago + driverPayment bank-linked) SOLO existen
         // para pagos-INGRESO (debtApplied > 0). payCredit (debtApplied < 0) no crea ninguno, así
         // que solo se limpian cuando debtApplied > 0 (y así la ventana ±5s no toca nada ajeno).
@@ -264,11 +270,14 @@ export async function edit(id: string, values: { amount?: number; description?: 
     await applyDebtDelta(prisma, original.driverId, values.amount-original.amount);
     return prisma.bankTransaction.update({where:{id},data:{...values,debtApplied:-values.amount}});
   }
-  await applyDebtDelta(prisma,original.driverId,original.debtApplied);
+  // Conservar el reparto que eligió el operador: la parte de base se mantiene (si cabe en el
+  // nuevo importe) y el resto va a comisión.
+  const previousBase = (await prisma.baseTransaction.aggregate({ where: { bankTransactionId: id }, _sum: { amount: true } }))._sum.amount ?? 0;
+  await revertDriverApplication(prisma, original);
   await prisma.baseTransaction.deleteMany({where:{bankTransactionId:id}});
   await prisma.driverPayment.deleteMany({where:{bankTransactionId:id}});
   await prisma.bankTransaction.update({where:{id},data:{...values,debtApplied:0}});
-  await applyBankToDriver(id,original.driverId);
+  await applyBankToDriver(id,original.driverId,undefined,Math.min(previousBase,values.amount));
   return prisma.bankTransaction.update({where:{id},data:{description:values.description ?? original.description}});
 
   });

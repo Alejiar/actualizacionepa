@@ -5,7 +5,7 @@ import { prisma, moneyTransaction } from "../lib/prisma";
 import { toBogotaDateStr } from "../lib/date-range";
 import { applyDebtDelta } from "../services/driver.service";
 import { MAX_MONEY } from "../lib/money-validation";
-import { assertOpenInstant, assertCalendarDate } from "../lib/period-guard";
+import { assertOrderPeriodOpen, assertCalendarDate } from "../lib/period-guard";
 import { badRequest } from "../lib/errors";
 
 // Eventos/estados que significan "entregado de verdad".
@@ -151,7 +151,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
         const id = carrier.id ?? order.assignedCarrierId ?? asObj(order.assignedCarrier).id;
         const driver = id == null ? null : await prisma.driver.findUnique({where:{shipdayDriverId_branchId:{shipdayDriverId:String(id),branchId}}});
         if (driver) {
-          await assertOpenInstant(existing.deliveredAt ?? existing.createdAt, "El pedido recibido", branchId);
+          await assertOrderPeriodOpen(existing.deliveredAt ?? existing.createdAt, "El pedido recibido", branchId);
           await prisma.shipdayOrder.update({where:{id:existing.id},data:{driverId:driver.id}});
           await applyDebtDelta(prisma,driver.id,existing.companyAmount);
           await refreshOrderStats(prisma,{...existing,driverId:driver.id});
@@ -177,7 +177,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
 
     // Respetar el día de arranque de la sucursal (no cargar entregas anteriores).
     if (branch.ordersSince && deliveredAt < branch.ordersSince) { ignored++; continue; }
-    await assertOpenInstant(deliveredAt, "La entrega recibida", branchId);
+    await assertOrderPeriodOpen(deliveredAt, "La entrega recibida", branchId);
 
     // Domiciliario asignado (carrier.id en la raíz; compat con otras ubicaciones).
     let driverId: string | null = null;

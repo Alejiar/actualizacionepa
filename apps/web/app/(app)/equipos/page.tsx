@@ -71,6 +71,8 @@ export default function EquiposPage() {
   const isAdmin = user?.role === "admin";
 
   const load = async (silent = false) => {
+    // Solo el admin consulta equipos: el operador vería un 403 (y un aviso de error cada carga).
+    if (!isAdmin) { setLoading(false); return; }
     if (!silent) setLoading(true);
     try {
       const [d, a] = await Promise.all([api.getDevices(), api.getDeviceActivity(undefined, 150)]);
@@ -80,7 +82,7 @@ export default function EquiposPage() {
     if (!silent) setLoading(false);
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [isAdmin]);
   useLive(() => load(true), 5000);
 
   const pending = useMemo(() => devices.filter(d => d.status === "pending"), [devices]);

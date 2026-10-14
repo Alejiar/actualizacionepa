@@ -54,7 +54,17 @@ y el default de fecha en `BankTransactionWizard.tsx`).
 - `BaseTransaction` (`type: "entrega" | "pago"`): base (capital de trabajo)
   entregada o devuelta por un domiciliario.
 - `DriverPayment`: pago de comisión cobrado a un domiciliario.
-- `Driver.pendingDebt` / `creditAmount`: **un solo saldo neto** por
+- **F14 (decisión del dueño, 14-oct-2026): base y comisiones son cuentas SEPARADAS.**
+  `Driver.pendingDebt` / `creditAmount` son **solo la cuenta de comisiones**; la base
+  pendiente es el libro `BaseTransaction` (Σ entregas − Σ devoluciones,
+  `lib/base-balance.ts`). Entregar/devolver/editar/borrar una base **no** toca
+  `pendingDebt`. Crédito y base **no se compensan**. Un pago se reparte como indique el
+  operador (`baseAmount`; el resto es comisión). El "total informativo" (comisión + base −
+  crédito) no es otra deuda. La migración `20261015090000_f14_separate_base_commission`
+  convirtió los saldos heredados (auditoría en `F14DriverMigration`). Al revertir un
+  BankTransaction aplicado, solo se revierte `debtApplied − Σ bases enlazadas` a comisiones
+  (`revertDriverApplication`).
+- `Driver.pendingDebt` / `creditAmount`: **un solo saldo neto de comisiones** por
   domiciliario. Invariante: nunca deben ser positivos los dos a la vez —
   `applyDebtDelta()` en `driver.service.ts` los netea. No los actualices a
   mano sin pasar por ahí (o por la lógica equivalente ya existente).
@@ -275,8 +285,22 @@ reintentar, y vuelve a abrirlo al terminar.
   `updatedAt`: tiene un hueco de un segundo.
 - Períodos cerrados: todo registro de dinero con fecha explícita pasa por
   `assertOpenPeriod` (`lib/period-guard.ts`) dentro de `moneyTransaction`. Día con Cierre o
-  anterior al último `MonthlyClose` → 409 hasta que el dueño defina D7. Un `Movement` cuenta
-  en `movementEffectiveAt()`: Caja, Historial y Movimientos deben usar esa misma fecha.
+  anterior al último `MonthlyClose` → 409. Un `Movement` cuenta en `movementEffectiveAt()`:
+  Caja, Historial y Movimientos deben usar esa misma fecha.
+- **D7 (decisión del dueño, 14-oct-2026):** un día con Cierre se corrige (editar, eliminar o
+  AGREGAR con `requestType: "create"`) SOLO aplicando una `EditRequest` aprobada, y solo si es
+  posterior al último cierre de mes. La aplicación corre en `runAsApprovedCorrection` y el
+  efecto en el flujo de cada día cerrado se guarda en `ShiftClose.corrections`
+  (`recordClosedDayCorrections`). El conteo original del Cierre (`totalCounted`,
+  `totalExpected`, `difference`) **nunca** se modifica, ni por solicitud (assertEntityPeriod lo
+  bloquea). El esperado de un día cerrado = su esperado registrado + correcciones aprobadas
+  DESPUÉS de su cierre (de días ≤ él), así la cadena del Historial sigue cuadrando. El semáforo
+  sigue dependiendo solo del Cierre original.
+- **Pedidos de Shipday (decisión del dueño, 14-oct-2026):** un pedido entregado después del
+  Cierre de su día se carga en su día (`assertOrderPeriodOpen`): un pedido no mueve caja. Solo
+  lo bloquea que SU MES (o uno posterior) esté cerrado — por mes del pedido, no por el instante
+  del cierre, para no perder pedidos del mes abierto. Los pedidos manuales siguen la guardia de
+  dinero (rechazo tras el Cierre).
 - Capital: el ancla es el último `MonthlyClose` con `closedAt <=` la fecha consultada, nunca
   "el último" a secas. `closeMonth` guarda `snapshot.capitalAnterior`; no lo quites.
 - Contrapartes (`pairWith`): exigen original existente, sin pareja previa, signo opuesto e
@@ -292,7 +316,7 @@ reintentar, y vuelve a abrirlo al terminar.
 
 ### Auditoría final de Claude (14-oct-2026, ver `CLAUDE_AUDITORIA_Y_CORRECCION_FINAL.md`)
 
-- Sondeo de Shipday: un pedido que cae en un período cerrado (409 de `assertOpenPeriod`)
+- Sondeo de Shipday: un pedido que cae en un mes cerrado (409 de `assertOrderPeriodOpen`)
   se **omite y se reporta** en `syncMessage` (`persistOrSkipClosed`); nunca debe abortar el
   ciclo, porque entonces ningún pedido abierto posterior de la ventana se cargaba. Si agregas
   otra ruta de carga masiva, usa el mismo patrón.

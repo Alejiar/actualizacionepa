@@ -24,7 +24,9 @@ interface Props {
 
 export function DriverStatementModal({ driver, onClose, onRefresh, debtCycle }: Props) {
   const [statement, setStatement] = useState<api.DriverStatement | null>(null);
+  // F14: el operador divide el pago entre comisión y devolución de base.
   const [payAmount, setPayAmount] = useState("");
+  const [payBase, setPayBase] = useState("");
   const [payMedium, setPayMedium] = useState<"cash" | "bank">("cash");
   const [paying, setPaying] = useState(false);
 
@@ -32,12 +34,10 @@ export function DriverStatementModal({ driver, onClose, onRefresh, debtCycle }: 
 
   useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [driver.id]);
 
+  // F14: `totalOwed` es la deuda SOLO por comisiones; la base es una cuenta aparte (entregadas −
+  // devueltas, del backend) y no se compensa con el crédito. El total es solo informativo.
   const totalOwed = statement?.pendingDebt ?? 0;
-  // Base pendiente CONCILIADA con la deuda neta (min(entrega−pago, deuda)): el residuo bruto del
-  // libro de base puede sobrevalorar la base de un domiciliario ya saldado. Misma regla que el
-  // backend (apps/api/src/lib/base-balance.ts) para que este estado de cuenta coincida con Bases,
-  // Deudas, Domiciliarios y Reportes. Nunca puede superar lo que realmente debe (totalOwed).
-  const basePending = statement ? Math.max(0, Math.min(statement.totalBasesGiven - statement.totalBasesPaid, totalOwed)) : 0;
+  const basePending = statement?.basePending ?? 0;
   const companyOwes = statement?.creditAmount ?? 0;
 
   // En modo Deudas: solo los domicilios de la deuda actual (entregados DESPUÉS del último
@@ -53,20 +53,23 @@ export function DriverStatementModal({ driver, onClose, onRefresh, debtCycle }: 
   const shownCompany = displayOrders.reduce((s, o) => s + o.companyAmount, 0);
 
   const handlePay = async () => {
-    const amount = parseInt(payAmount.replace(/\D/g, ""));
+    const commission = parseInt(payAmount.replace(/\D/g, "") || "0");
+    const base = parseInt(payBase.replace(/\D/g, "") || "0");
+    const amount = commission + base;
     if (!amount || amount <= 0) { toast.error("Ingresa un monto válido"); return; }
-    if (statement && amount > statement.pendingDebt) {
-      if (!confirm(`El monto (${formatCOP(amount)}) supera la deuda (${formatCOP(statement.pendingDebt)}). ¿Continuar?`)) return;
+    if (base > basePending) { toast.error(`La parte a base supera la base sin devolver (${formatCOP(basePending)}).`); return; }
+    if (statement && commission > statement.pendingDebt) {
+      if (!confirm(`La parte a comisión (${formatCOP(commission)}) supera la deuda por comisiones (${formatCOP(statement.pendingDebt)}). El exceso quedará a favor del domiciliario. ¿Continuar?`)) return;
     }
     setPaying(true);
     try {
-      const r = await api.registerPayment(driver.id, amount, payMedium);
+      const r = await api.registerPayment(driver.id, amount, payMedium, undefined, base);
       const parts: string[] = [];
-      if (r?.baseAlloc) parts.push(`${formatCOP(r.baseAlloc)} a base`);
       if (r?.commissionAlloc) parts.push(`${formatCOP(r.commissionAlloc)} a comisión`);
-      if (r?.excess && r.excess > 0) parts.push(`la empresa queda debiendo ${formatCOP(r.excess)}`);
+      if (r?.baseAlloc) parts.push(`${formatCOP(r.baseAlloc)} a base`);
+      if (r?.creditAmount && r.creditAmount > 0) parts.push(`crédito a su favor ${formatCOP(r.creditAmount)}`);
       toast.success(`Pago ${formatCOP(amount)} (${payMedium === "cash" ? "efectivo" : "transferencia"})${parts.length ? ` · ${parts.join(" · ")}` : ""}`);
-      setPayAmount("");
+      setPayAmount(""); setPayBase("");
       onRefresh();
       await reload();
     } catch (err) { toast.error(String(err)); }
@@ -94,32 +97,32 @@ export function DriverStatementModal({ driver, onClose, onRefresh, debtCycle }: 
               <Stat label="Pedidos entregados" value={String(shownCount)} />
               <Stat label="Valor entregado" value={formatCOP(shownValue)} />
               <Stat label="% empresa acumulado" value={formatCOP(shownCompany)} />
-              <Stat label="Deuda total" value={formatCOP(totalOwed)} highlight={totalOwed > 0} />
-              {companyOwes > 0 && <Stat label="Empresa le debe" value={formatCOP(companyOwes)} credit />}
+              <Stat label="Deuda por comisiones" value={formatCOP(totalOwed)} highlight={totalOwed > 0} />
+              {companyOwes > 0 && <Stat label="Empresa le debe (crédito)" value={formatCOP(companyOwes)} credit />}
             </div>
 
             {/* Desglose de deuda */}
             <div className="grid grid-cols-3 gap-3">
               <Stat label="Base entregada" value={formatCOP(statement.totalBasesGiven)} />
-              <Stat label="Base pagada" value={formatCOP(statement.totalBasesPaid)} />
-              <Stat label="Base pendiente" value={formatCOP(basePending)} highlight={basePending > 0} />
+              <Stat label="Base devuelta" value={formatCOP(statement.totalBasesPaid)} />
+              <Stat label="Base sin devolver" value={formatCOP(basePending)} highlight={basePending > 0} />
             </div>
+            <p className="text-xs text-muted-foreground">
+              Total informativo (comisión + base − crédito): <strong className="tnum">{formatCOP(statement.totalInformativo ?? totalOwed + basePending - companyOwes)}</strong>. No es otra deuda: comisión y base se cobran por separado y el crédito no descuenta la base.
+            </p>
 
             {/* Pago */}
             <div className={`rounded-2xl p-4 space-y-3 ${totalOwed > 0 ? "bg-red-500/10 border border-red-500/20" : companyOwes > 0 ? "bg-amber-500/10 border border-amber-500/20" : "bg-secondary/40"}`}>
               <div className="flex items-center justify-between">
                 <p className={`font-bold ${totalOwed > 0 ? "text-red-700" : companyOwes > 0 ? "text-amber-700 dark:text-amber-400" : ""}`}>
-                  {totalOwed > 0 ? "Registrar pago (parcial o total)" : companyOwes > 0 ? "La empresa le debe — pago anticipado" : "Sin deuda pendiente"}
+                  {totalOwed > 0 || basePending > 0 ? "Registrar pago (indica cuánto va a comisión y cuánto a base)" : companyOwes > 0 ? "La empresa le debe — pago anticipado" : "Sin deuda pendiente"}
                 </p>
                 {totalOwed > 0 && <span className="text-xs font-bold tnum text-red-700">Debe: {formatCOP(totalOwed)}</span>}
                 {companyOwes > 0 && <span className="text-xs font-bold tnum text-amber-700">Empresa debe: {formatCOP(companyOwes)}</span>}
               </div>
-              {totalOwed > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  Se descontará primero <strong>{formatCOP(basePending)}</strong> de base pendiente; el resto, a comisión.
-                  {" "}Si el monto supera la deuda, la empresa quedará debiendo el exceso.
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground">
+                La parte a comisión reduce solo la deuda por comisiones (si la supera, el exceso queda a su favor). La parte a base reduce solo la base sin devolver y no puede superarla.
+              </p>
 
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -150,9 +153,19 @@ export function DriverStatementModal({ driver, onClose, onRefresh, debtCycle }: 
                 <input
                   type="text"
                   inputMode="numeric"
-                  placeholder="Monto en COP"
+                  placeholder="A comisión (COP)"
+                  aria-label="Monto a comisión"
                   value={payAmount}
                   onChange={e => setPayAmount(e.target.value.replace(/\D/g, ""))}
+                  className="flex-1 px-3 py-2.5 rounded-xl border border-border bg-background text-sm tnum"
+                />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="A base (COP)"
+                  aria-label="Monto a devolver base"
+                  value={payBase}
+                  onChange={e => setPayBase(e.target.value.replace(/\D/g, ""))}
                   className="flex-1 px-3 py-2.5 rounded-xl border border-border bg-background text-sm tnum"
                 />
                 <button
@@ -164,14 +177,16 @@ export function DriverStatementModal({ driver, onClose, onRefresh, debtCycle }: 
                 </button>
               </div>
 
-              {totalOwed > 0 && (
+              {(totalOwed > 0 || basePending > 0) && (
                 <div className="flex gap-2 flex-wrap">
-                  <button onClick={() => quick(totalOwed)} className="text-xs px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-secondary transition">
-                    Pagar todo ({formatCOP(totalOwed)})
-                  </button>
-                  {basePending > 0 && basePending < totalOwed && (
-                    <button onClick={() => quick(basePending)} className="text-xs px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-secondary transition">
-                      Solo base ({formatCOP(basePending)})
+                  {totalOwed > 0 && (
+                    <button onClick={() => quick(totalOwed)} className="text-xs px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-secondary transition">
+                      Toda la comisión ({formatCOP(totalOwed)})
+                    </button>
+                  )}
+                  {basePending > 0 && (
+                    <button onClick={() => setPayBase(String(basePending))} className="text-xs px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-secondary transition">
+                      Toda la base ({formatCOP(basePending)})
                     </button>
                   )}
                   <button onClick={() => quick(Math.round(totalOwed / 2))} className="text-xs px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-secondary transition">

@@ -79,10 +79,11 @@ export const getDrivers = (branchId?: string) =>
   apiFetch<Driver[]>(`/sd/drivers${branchId ? `?branchId=${branchId}` : ""}`);
 export const getDriverDetail = (id: string) => apiFetch<DriverDetail>(`/sd/drivers/${id}`);
 export const getDriverStatement = (id: string) => apiFetch<DriverStatement>(`/sd/drivers/${id}/statement`);
-export const registerPayment = (id: string, amount: number, medium: "cash" | "bank", notes?: string) =>
-  apiFetch<{ payment: Payment; baseAlloc: number; commissionAlloc: number; basePendingBefore: number; excess: number; creditAmount: number }>(
+// F14: el operador divide el pago: `baseAmount` va a devolver base; el resto, a comisión.
+export const registerPayment = (id: string, amount: number, medium: "cash" | "bank", notes?: string, baseAmount = 0) =>
+  apiFetch<{ payment: Payment; baseAlloc: number; commissionAlloc: number; basePendingBefore: number; commissionDebt: number; creditAmount: number }>(
     `/sd/drivers/${id}/payment`,
-    { method: "POST", body: JSON.stringify({ amount, medium, notes }) },
+    { method: "POST", body: JSON.stringify({ amount, medium, notes, baseAmount }) },
   );
 export const getOrdersToday = (branchId?: string, date?: string) => {
   const q = new URLSearchParams(Object.entries({ branchId, date }).filter(([, v]) => v) as [string, string][]);
@@ -131,10 +132,10 @@ export const payDriverCredit = (driverId: string, medium: "cash" | "bank") =>
     { method: "POST", body: JSON.stringify({ medium }) }
   );
 
-export const applyBankToDriver = (bankTxId: string, driverId: string) =>
-  apiFetch<{ applied: number; previousDebt: number; newDebt: number; creditAmount: number; creditMedium: string | null; excess: number }>(
+export const applyBankToDriver = (bankTxId: string, driverId: string, baseAmount = 0) =>
+  apiFetch<{ applied: number; baseAlloc: number; commissionAlloc: number; previousDebt: number; newDebt: number; creditAmount: number; creditMedium: string | null; basePendingBefore: number }>(
     `/bank-transactions/${bankTxId}/apply-to-driver`,
-    { method: "POST", body: JSON.stringify({ driverId }) }
+    { method: "POST", body: JSON.stringify({ driverId, baseAmount }) }
   );
 export const getOrdersByBranch = (branchId: string, from?: string, to?: string) => {
   const q = new URLSearchParams(Object.entries({ from, to }).filter(([, v]) => v) as [string, string][]);
@@ -442,7 +443,7 @@ export interface EditRequestChange { old: string; new: string }
 export interface EditRequest {
   id: string;
   requesterId: string;
-  requestType: "edit" | "delete";
+  requestType: "edit" | "delete" | "create";
   entityType: string;
   entityId: string;
   entityLabel: string;
@@ -465,9 +466,9 @@ export const createEditRequest = (data: {
   entityType: string;
   entityId: string;
   entityLabel: string;
-  changes: Record<string, EditRequestChange>;
+  changes: Record<string, EditRequestChange> | Record<string, unknown>;
   reason: string;
-  requestType?: "edit" | "delete";
+  requestType?: "edit" | "delete" | "create";
 }) => apiFetch<EditRequest>("/edit-requests", { method: "POST", body: JSON.stringify(data) });
 export const reviewEditRequest = (id: string, action: "approved" | "rejected", notes?: string) =>
   apiFetch<EditRequest>(`/edit-requests/${id}/review`, { method: "POST", body: JSON.stringify({ action, notes }) });
@@ -512,12 +513,15 @@ export interface Driver {
   name: string;
   phone?: string;
   active: boolean;
+  /** F14: deuda SOLO por comisiones. */
   pendingDebt: number;
+  /** F14: crédito a favor del domiciliario (por comisiones). No se compensa con la base. */
   creditAmount: number;
   creditMedium?: string | null;
-  // Base pendiente CONCILIADA con la deuda neta (min(entrega−pago, pendingDebt)). Fuente única
-  // para el estado de base en el módulo de Bases; ver apps/api/src/lib/base-balance.ts.
+  /** F14: base sin devolver = entregadas − devueltas (cuenta propia). */
   basePending?: number;
+  /** Solo informativo: base + comisión − crédito. No es otra deuda. */
+  totalInformativo?: number;
   branch: { id: string; name: string };
   createdAt: string;
 }
@@ -541,6 +545,8 @@ export interface DriverStatement {
   pendingDebt: number;
   creditAmount: number;
   creditMedium?: string | null;
+  basePending: number;
+  totalInformativo: number;
   orders: Order[];
   bases: BaseTransaction[];
   payments: Payment[];
@@ -619,7 +625,8 @@ export interface DashboardData {
   today: { orders: number; value: number; company: number };
   month: { orders: number; value: number; company: number };
   drivers: { total: number; active: number };
-  debts: { totalAmount: number; driverCount: number };
+  /** F14: totalAmount = solo comisiones; basesPending aparte; combined es informativo. */
+  debts: { totalAmount: number; driverCount: number; commission?: number; basesPending?: number; baseDriverCount?: number; combined?: number };
   recentOrders: Order[];
   branches: { id: string; name: string; syncStatus: string; lastSyncAt?: string }[];
 }
@@ -639,8 +646,13 @@ export interface DailyStat {
 export interface DriverDebt {
   id: string;
   name: string;
+  /** F14: deuda solo por comisiones. */
   pendingDebt: number;
   creditAmount: number;
+  /** F14: base sin devolver (cuenta aparte). */
+  basePending?: number;
+  /** Solo informativo: comisión + base − crédito. */
+  totalInformativo?: number;
   creditMedium?: string | null;
   branch: { id: string; name: string };
 }
@@ -815,13 +827,13 @@ export interface BankTransaction {
 
 // ─── Reporte mensual ──────────────────────────────────────────────────────────
 export interface MonthlyReport {
-  debtReconciliation: { total: number; basesCurrentMonth: number; basesPrevious: number; basesAllTime: number; commission: number };
+  debtReconciliation: { total: number; basesCurrentMonth: number; basesPrevious: number; basesAllTime: number; commission: number; credit?: number };
   month: string;
   totalSales: number;
   expenses: { cash: number; bank: number; total: number };
   payroll: { cash: number; bank: number; total: number };
-  bases: { given: number; returned: number; diff: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
-  commission: { pending: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
+  bases: { previous?: number; given: number; returned: number; diff: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
+  commission: { pending: number; credit?: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
   transfers: { ingresos: number; egresos: number; diff: number; ok: boolean; pendingItems?: { id: string; name: string; pendingDebt: number }[] };
   clientDebt: { generated: number; paid: number; balance: number; normal: number; hourly: number; ok: boolean; pendingClients: { id: string; name: string; pendingDebt: number }[] };
   netProfit: number;
@@ -932,6 +944,12 @@ export interface DaySummary {
   netProfit: number;
   hasClose: boolean;
   cajaCuadrada: boolean;
+  /** D7: conteo ORIGINAL del Cierre y correcciones aprobadas después. */
+  close?: {
+    totalCounted: number; totalExpected: number; difference: number;
+    bankCounted: number | null; bankExpected: number | null; bankDifference: number | null;
+    closedAt: string; corrections: ShiftCorrection[];
+  } | null;
 }
 /** Resumen detallado de un día (Historial): junta Caja, Banco, domiciliarios, bases y deudas. */
 export const getDaySummary = (date: string) => apiFetch<DaySummary>(`/days/${date}/summary`);
@@ -956,3 +974,9 @@ export const registerShift = (data: {
   bankCounted?: number | null;
   notes?: string;
 }) => apiFetch<ShiftClose>("/shifts", { method: "POST", body: JSON.stringify(data) });
+
+// ─── D7: correcciones de días cerrados ───────────────────────────────────────
+export interface ShiftCorrection {
+  requestId: string; requestType: string; entityType: string; entityId: string; description: string;
+  cashDelta: number; bankDelta: number; approvedBy: string; approvedByName: string | null; approvedAt: string;
+}

@@ -371,7 +371,9 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [driverId, setDriverId] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ applied: number; previousDebt: number; newDebt: number; creditAmount: number; creditMedium: string | null; excess: number } | null>(null);
+  // F14: el operador indica cuánto del ingreso es devolución de base; el resto es comisión.
+  const [baseText, setBaseText] = useState("");
+  const [result, setResult] = useState<{ applied: number; baseAlloc: number; commissionAlloc: number; previousDebt: number; newDebt: number; creditAmount: number; creditMedium: string | null } | null>(null);
 
   useEffect(() => {
     api.getDrivers().then(setDrivers).catch(() => {});
@@ -383,7 +385,8 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
     if (!driverId) return;
     setLoading(true);
     try {
-      const res = await api.applyBankToDriver(mov.id, driverId);
+      const base = parseInt(baseText.replace(/\D/g, "") || "0");
+      const res = await api.applyBankToDriver(mov.id, driverId, base);
       setResult(res);
     } catch (e) { toast.error(String(e)); }
     setLoading(false);
@@ -415,14 +418,17 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
                 <option value="">— Seleccionar —</option>
                 {drivers.map(d => (
                   <option key={d.id} value={d.id}>
-                    {d.name} · {d.branch.name} · Deuda: {formatCOP(d.pendingDebt)}
+                    {d.name} · {d.branch.name} · Comisión: {formatCOP(d.pendingDebt)} · Base: {formatCOP(d.basePending ?? 0)}
                   </option>
                 ))}
               </select>
               {selected && (
                 <div className="flex gap-2 text-sm">
                   <span className="px-2 py-1 rounded-lg bg-red-500/10 text-red-600 font-bold">
-                    Debe: {formatCOP(selected.pendingDebt)}
+                    Comisión: {formatCOP(selected.pendingDebt)}
+                  </span>
+                  <span className="px-2 py-1 rounded-lg bg-amber-500/10 text-amber-700 font-bold">
+                    Base: {formatCOP(selected.basePending ?? 0)}
                   </span>
                   {selected.creditAmount > 0 && (
                     <span className="px-2 py-1 rounded-lg bg-amber-500/10 text-amber-600 font-bold">
@@ -432,6 +438,22 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
                 </div>
               )}
             </div>
+
+            {selected && (selected.basePending ?? 0) > 0 && (
+              <div className="space-y-1">
+                <label className="text-sm font-bold">Parte a devolver base (opcional)</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="0"
+                  aria-label="Parte del ingreso a devolver base"
+                  value={baseText}
+                  onChange={e => setBaseText(e.target.value.replace(/\D/g, ""))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm tnum"
+                />
+                <p className="text-xs text-muted-foreground">El resto ({formatCOP(Math.max(0, mov.amount - parseInt(baseText || "0")))}) se aplica a comisión.</p>
+              </div>
+            )}
 
             <div className="flex gap-2">
               <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-bold hover:bg-secondary transition">Cancelar</button>
@@ -455,12 +477,13 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
               <div className="bg-secondary/50 rounded-xl p-3">
                 <p className="text-xs text-muted-foreground">Monto aplicado</p>
                 <p className="font-black tnum text-green-600">{formatCOP(result.applied)}</p>
+                <p className="text-xs text-muted-foreground">comisión {formatCOP(result.commissionAlloc)} · base {formatCOP(result.baseAlloc)}</p>
               </div>
             </div>
 
             {result.newDebt > 0 && (
               <div className="rounded-xl p-4 bg-red-500/10 border border-red-500/30 text-center">
-                <p className="text-xs text-muted-foreground">El domiciliario aún debe</p>
+                <p className="text-xs text-muted-foreground">El domiciliario aún debe (comisiones)</p>
                 <p className="font-black text-2xl tnum text-red-600">{formatCOP(result.newDebt)}</p>
               </div>
             )}

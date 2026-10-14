@@ -19,18 +19,21 @@ function formatCOP(n: number) { return "$" + n.toLocaleString("es-CO"); }
 
 export function DriverPaymentWizard({ open, onOpenChange, driverId, driverName, statement, onDone }: Props) {
   const [step, setStep] = useState(1);
-  const [amount, setAmount] = useState(0);
+  // F14: el operador divide el pago entre comisión y devolución de base (cuentas separadas).
+  const [commissionPart, setCommissionPart] = useState(0);
+  const [basePart, setBasePart] = useState(0);
+  const amount = commissionPart + basePart;
   const [medium, setMedium] = useState<"cash" | "bank" | null>(null);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
   const pendingDebt = statement?.pendingDebt ?? 0;
-  const basePending = statement
-    ? statement.totalBasesGiven - statement.totalBasesPaid
-    : 0;
+  const credit = statement?.creditAmount ?? 0;
+  const basePending = statement?.basePending ?? Math.max(0, (statement?.totalBasesGiven ?? 0) - (statement?.totalBasesPaid ?? 0));
+  const baseTooHigh = basePart > basePending;
 
   function reset() {
-    setStep(1); setAmount(0); setMedium(null); setNotes("");
+    setStep(1); setCommissionPart(0); setBasePart(0); setMedium(null); setNotes("");
   }
   function close() { onOpenChange(false); setTimeout(reset, 250); }
 
@@ -38,8 +41,8 @@ export function DriverPaymentWizard({ open, onOpenChange, driverId, driverName, 
     if (amount <= 0) return;
     setSaving(true);
     try {
-      await api.registerPayment(driverId, amount, m, notes || undefined);
-      toast.success(`✅ Pago de ${formatCOP(amount)} registrado para ${driverName}`);
+      await api.registerPayment(driverId, amount, m, notes || undefined, basePart);
+      toast.success(`✅ Pago de ${formatCOP(amount)} registrado para ${driverName} (comisión ${formatCOP(commissionPart)} · base ${formatCOP(basePart)})`);
       onDone?.();
       close();
     } catch (err) {
@@ -62,39 +65,53 @@ export function DriverPaymentWizard({ open, onOpenChange, driverId, driverName, 
       step={step}
       total={3}
       title={titles[step - 1]}
-      subtitle={pendingDebt > 0 ? `Deuda pendiente: ${formatCOP(pendingDebt)}` : "Sin deuda pendiente"}
+      subtitle={`Comisión: ${formatCOP(pendingDebt)} · Base: ${formatCOP(basePending)}`}
       onBack={step > 1 ? () => setStep(s => s - 1) : undefined}
     >
       {/* Paso 1 — Monto */}
       {step === 1 && (
         <div className="space-y-4">
-          {/* Resumen de deuda */}
+          {/* F14: comisión y base son cuentas separadas; el total es solo informativo. */}
           {statement && (
             <div className="glass rounded-2xl p-4 space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Deuda total</span>
-                <span className={`font-bold tnum ${pendingDebt > 0 ? "text-red-500" : "text-green-600"}`}>
-                  {pendingDebt > 0 ? formatCOP(pendingDebt) : "Al día ✓"}
-                </span>
+                <span className="text-muted-foreground">Deuda por comisiones</span>
+                <span className={`font-bold tnum ${pendingDebt > 0 ? "text-red-500" : "text-green-600"}`}>{pendingDebt > 0 ? formatCOP(pendingDebt) : "Al día ✓"}</span>
               </div>
-              {basePending > 0 && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Base sin devolver</span>
+                <span className={`font-bold tnum ${basePending > 0 ? "text-amber-500" : "text-green-600"}`}>{basePending > 0 ? formatCOP(basePending) : "Al día ✓"}</span>
+              </div>
+              {credit > 0 && (
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Bases pendientes (se descuenta primero)</span>
-                  <span className="font-bold tnum text-amber-500">{formatCOP(basePending)}</span>
+                  <span className="text-muted-foreground">Crédito a su favor (no se compensa con la base)</span>
+                  <span className="font-bold tnum text-blue-600">{formatCOP(credit)}</span>
                 </div>
               )}
-              {pendingDebt > 0 && (
-                <button
-                  onClick={() => setAmount(pendingDebt)}
-                  className="w-full text-xs py-2 rounded-xl bg-primary/10 text-primary font-bold hover:bg-primary/20 transition mt-1"
-                >
-                  Pagar deuda completa ({formatCOP(pendingDebt)})
-                </button>
-              )}
+              <div className="flex justify-between text-xs text-muted-foreground border-t border-border pt-2">
+                <span>Total informativo (comisión + base − crédito)</span>
+                <span className="tnum">{formatCOP(pendingDebt + basePending - credit)}</span>
+              </div>
             </div>
           )}
 
-          <MoneyInput value={amount} onChange={setAmount} autoFocus />
+          <label className="block text-xs font-bold text-muted-foreground">A comisión</label>
+          <MoneyInput value={commissionPart} onChange={setCommissionPart} autoFocus />
+          {pendingDebt > 0 && (
+            <button onClick={() => setCommissionPart(pendingDebt)} className="w-full text-xs py-2 rounded-xl bg-primary/10 text-primary font-bold hover:bg-primary/20 transition">
+              Pagar toda la comisión ({formatCOP(pendingDebt)})
+            </button>
+          )}
+
+          <label className="block text-xs font-bold text-muted-foreground">A devolver base</label>
+          <MoneyInput value={basePart} onChange={setBasePart} />
+          {basePending > 0 && (
+            <button onClick={() => setBasePart(basePending)} className="w-full text-xs py-2 rounded-xl bg-amber-500/10 text-amber-600 font-bold hover:bg-amber-500/20 transition">
+              Devolver toda la base ({formatCOP(basePending)})
+            </button>
+          )}
+          {baseTooHigh && <div className="text-xs text-red-600">La parte a base no puede superar la base sin devolver ({formatCOP(basePending)}).</div>}
+          <div className="text-sm font-bold text-right">Total del pago: {formatCOP(amount)}</div>
 
           <input
             value={notes}
@@ -104,7 +121,7 @@ export function DriverPaymentWizard({ open, onOpenChange, driverId, driverName, 
           />
 
           <button
-            disabled={amount <= 0}
+            disabled={amount <= 0 || baseTooHigh}
             onClick={() => setStep(2)}
             className="w-full bg-primary text-primary-foreground font-bold py-4 rounded-2xl shadow-cash disabled:opacity-40"
           >
@@ -143,21 +160,13 @@ export function DriverPaymentWizard({ open, onOpenChange, driverId, driverName, 
             <Row label="Medio" value={medium === "cash" ? "💵 Efectivo" : "🏦 Banco"} />
             {notes && <Row label="Notas" value={notes} />}
             <hr className="border-border" />
-            <Row label="Monto a pagar" value={formatCOP(amount)} highlight positive />
-            {statement && pendingDebt > 0 && (
-              <>
-                {basePending > 0 && amount >= basePending && (
-                  <div className="text-xs text-amber-600 bg-amber-500/10 rounded-xl px-3 py-2">
-                    ⚡ Se abonará {formatCOP(Math.min(amount, basePending))} a bases pendientes primero
-                  </div>
-                )}
-                <Row
-                  label="Deuda restante"
-                  value={formatCOP(Math.max(0, pendingDebt - amount))}
-                  warn={pendingDebt - amount > 0}
-                />
-              </>
-            )}
+            <Row label="Total a recibir" value={formatCOP(amount)} highlight positive />
+            <Row label="A comisión" value={formatCOP(commissionPart)} />
+            <Row label="A devolver base" value={formatCOP(basePart)} />
+            <hr className="border-border" />
+            <Row label="Comisión restante" value={formatCOP(Math.max(0, pendingDebt - commissionPart))} warn={pendingDebt - commissionPart > 0} />
+            {commissionPart > pendingDebt && <Row label="Queda a su favor (crédito)" value={formatCOP(credit + commissionPart - pendingDebt)} />}
+            <Row label="Base restante" value={formatCOP(Math.max(0, basePending - basePart))} warn={basePending - basePart > 0} />
           </div>
 
           <button

@@ -53,9 +53,12 @@ export default function DeudasPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId]);
 
+  // F14: comisiones y base son cuentas separadas (no se compensan con el crédito).
+  const owed = (d: DriverDebt) => (d.pendingDebt ?? 0) + (d.basePending ?? 0);
   const totalDebt = (debtors ?? []).reduce((s, d) => s + (d.pendingDebt ?? 0), 0);
+  const totalBase = (debtors ?? []).reduce((s, d) => s + (d.basePending ?? 0), 0);
   const totalCredit = (creditors ?? []).reduce((s, d) => s + (d.creditAmount ?? 0), 0);
-  const highDebt = (debtors ?? []).filter(d => d.pendingDebt > 100000);
+  const highDebt = (debtors ?? []).filter(d => owed(d) > 100000);
 
   // Búsqueda + orden de la lista de deudores.
   const q = search.trim().toLowerCase();
@@ -63,7 +66,7 @@ export default function DeudasPage() {
     .filter(d => !q || d.name.toLowerCase().includes(q))
     .sort((a, b) => sortBy === "alpha"
       ? a.name.localeCompare(b.name, "es", { sensitivity: "base" })
-      : b.pendingDebt - a.pendingDebt);
+      : owed(b) - owed(a));
 
   return (
     <div className="space-y-6">
@@ -73,7 +76,7 @@ export default function DeudasPage() {
             <h1 className="text-2xl font-black">Dashboard de Deudas</h1>
             <LiveBadge />
           </div>
-          <p className="text-sm text-muted-foreground">{debtors.length} domiciliarios con deuda · {formatCOP(totalDebt)} total pendiente</p>
+          <p className="text-sm text-muted-foreground">{debtors.length} domiciliarios deben · comisiones {formatCOP(totalDebt)} · base sin devolver {formatCOP(totalBase)}</p>
         </div>
         <div className="flex gap-2">
           <select value={branchId} onChange={e => setBranchId(e.target.value)} className="px-3 py-2 rounded-xl border border-border bg-background text-sm">
@@ -93,7 +96,7 @@ export default function DeudasPage() {
           <div className="flex flex-wrap gap-2">
             {highDebt.map(d => (
               <span key={d.id} className="px-3 py-1.5 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded-xl text-sm font-bold">
-                {d.name} · {formatCOP(d.pendingDebt)}
+                {d.name} · {formatCOP(owed(d))}
               </span>
             ))}
           </div>
@@ -102,12 +105,13 @@ export default function DeudasPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="glass-strong rounded-2xl p-4">
-          <p className="text-xs text-muted-foreground">Total deuda (ellos deben)</p>
+          <p className="text-xs text-muted-foreground">Deuda por comisiones</p>
           <p className="font-black text-2xl tnum text-red-500 mt-1">{formatCOP(totalDebt)}</p>
         </div>
         <div className="glass-strong rounded-2xl p-4">
-          <p className="text-xs text-muted-foreground">Domiciliarios con deuda</p>
-          <p className="font-black text-2xl tnum mt-1">{debtors.length}</p>
+          <p className="text-xs text-muted-foreground">Base sin devolver</p>
+          <p className="font-black text-2xl tnum text-amber-600 mt-1">{formatCOP(totalBase)}</p>
+          <p className="text-xs text-muted-foreground">{debtors.length} domiciliarios deben</p>
         </div>
         <div className="glass-strong rounded-2xl p-4">
           <p className="text-xs text-muted-foreground">Total crédito (empresa debe)</p>
@@ -163,17 +167,19 @@ export default function DeudasPage() {
                     <th className="text-left px-5 py-3">Pos.</th>
                     <th className="text-left px-5 py-3">Domiciliario</th>
                     <th className="text-left px-5 py-3">Sucursal</th>
-                    <th className="text-right px-5 py-3">Deuda pendiente</th>
+                    <th className="text-right px-5 py-3">Comisiones</th>
+                    <th className="text-right px-5 py-3">Base</th>
+                    <th className="text-right px-5 py-3" title="Solo informativo: comisión + base − crédito">Total inf.</th>
                     <th className="text-center px-5 py-3">Nivel</th>
                     <th className="px-5 py-3" />
                   </tr>
                 </thead>
                 <tbody>
                   {viewDebtors.length === 0 && (
-                    <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-muted-foreground">Sin resultados para “{search}”</td></tr>
+                    <tr><td colSpan={8} className="px-5 py-6 text-center text-sm text-muted-foreground">Sin resultados para “{search}”</td></tr>
                   )}
                   {viewDebtors.map((d, i) => {
-                    const level = d.pendingDebt > 200000 ? "crítico" : d.pendingDebt > 100000 ? "alto" : d.pendingDebt > 50000 ? "medio" : "bajo";
+                    const level = owed(d) > 200000 ? "crítico" : owed(d) > 100000 ? "alto" : owed(d) > 50000 ? "medio" : "bajo";
                     const levelStyle = { crítico: "bg-red-200 text-red-800", alto: "bg-red-100 text-red-700", medio: "bg-orange-100 text-orange-700", bajo: "bg-yellow-100 text-yellow-700" }[level];
                     return (
                       <tr key={d.id} className="border-b border-border/50 hover:bg-secondary/30 transition">
@@ -181,6 +187,8 @@ export default function DeudasPage() {
                         <td className="px-5 py-3 font-bold">{d.name}</td>
                         <td className="px-5 py-3 text-muted-foreground">{d.branch.name}</td>
                         <td className="px-5 py-3 text-right font-black tnum text-red-600 text-base">{formatCOP(d.pendingDebt)}</td>
+                        <td className="px-5 py-3 text-right font-bold tnum text-amber-600">{formatCOP(d.basePending ?? 0)}</td>
+                        <td className="px-5 py-3 text-right tnum text-muted-foreground">{formatCOP(d.pendingDebt + (d.basePending ?? 0) - (d.creditAmount ?? 0))}</td>
                         <td className="px-5 py-3 text-center">
                           <span className={`text-xs px-2 py-0.5 rounded-full font-bold capitalize ${levelStyle}`}>{level}</span>
                         </td>

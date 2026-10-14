@@ -158,7 +158,9 @@ async function main() {
       const r = await api(`/sd/drivers/${d.id}/payment`, "POST", { amount: 10000, medium: "cash" }, user);
       await done;
       assert.equal(r.status, 503, JSON.stringify(r)); assert.ok(!JSON.stringify(r.body).includes("prisma"));
-      assert.equal((await p.driver.findUniqueOrThrow({ where: { id: d.id } })).pendingDebt, 50000);
+      // F14: la base es otra cuenta; sin efectos = deuda por comisiones 0 y base intacta (sin devolución).
+      assert.equal((await p.driver.findUniqueOrThrow({ where: { id: d.id } })).pendingDebt, 0);
+      assert.equal(await p.baseTransaction.count({ where: { driverId: d.id, type: "pago" } }), 0);
       assert.equal(await p.bankTransaction.count({ where: { driverId: d.id } }), 0);
     });
     await check("Sucursal desactivada: 'cargar desde hoy' no cambia su fecha de corte", async () => {
