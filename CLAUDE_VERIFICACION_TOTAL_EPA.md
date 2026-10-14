@@ -122,3 +122,5 @@ La diferencia queda explicada. La hoja no pretende ser un saldo final; incorpora
 - Pedido cancelado real y webhook real: el webhook apunta a producción.
 - Pantallas de Libreta de campo, Equipos y Trabajadores: sin ensayo propio en la interfaz.
 - Instalador nuevo de Windows: no se generó.
+
+> **Nota (segunda ronda, 14-oct-2026):** este documento describe la primera ronda. Para el estado vigente (F14 con base y comisión separadas, D7 y cobertura 124/124), consulta `CLAUDE_MATRIZ_COBERTURA_TOTAL_EPA.md` y `CLAUDE_CONCILIACION_FINAL_COMPLETA.md`. Las cifras de domiciliarios de §2 usan el modelo anterior (base dentro de la deuda).

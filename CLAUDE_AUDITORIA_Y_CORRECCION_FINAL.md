@@ -90,3 +90,34 @@ Hallazgos que **no son defectos** y quedan documentados:
   - `.env` apunta a la DEMO; el original está en `backups/env_antes_demo_20261014.bak`;
   - `DEMO_CREDENCIALES.local`;
   - `backups/cashbuddy_pre_demo_20261014_114158.dump`.
+
+## 8. Segunda ronda: decisiones del propietario implementadas (14-oct-2026)
+
+El propietario decidió:
+1. El operador divide cada pago entre comisión y base.
+2. Crédito y base **no** se compensan.
+3. D7: un día cerrado se corrige por solicitud aprobada (editar, eliminar o **agregar**) mientras el mes esté abierto.
+4. Un pedido de Shipday posterior al Cierre se carga en su día.
+
+| Decisión | Implementación | Verificación |
+|---|---|---|
+| F14 (1 y 2) | `lib/base-balance.ts` (base pura); `pendingDebt`/`creditAmount` solo comisiones; `registerPayment` y `applyBankToDriver` con `baseAmount`; reversión por `debtApplied − bases enlazadas`; reportes, Excel, Deudas, Domiciliarios, Dashboard y estado de cuenta separados; migración 35 con auditoría | `claude-f14-d7.ts` (casos A–D y más), `claude-migration-f14.cjs` (datos heredados: sin créditos fantasma, total conservado, caja sin cambios), migración real de la DEMO, clic real en el pago dividido |
+| D7 (3) | `runAsApprovedCorrection`; `ShiftClose.corrections` (migración 36); `requestType: "create"`; esperado del día = registrado + correcciones posteriores; formulario en Historial, tarjeta en Solicitudes | D7-EDIT/REJ/DEL/ADD/ADDMOV/CHAIN/MES/VAL/DUP + flujo completo con clic real |
+| Pedidos post-cierre (4) | `assertOrderPeriodOpen` (bloquea solo el **mes** del pedido) | ORD-POST, ORD-SYNC1/2, LOCK12/17/19 |
+
+Defectos nuevos encontrados y corregidos en esta ronda:
+- **D-A6:** la guardia por instante del cierre de mes perdía pedidos del mes abierto.
+- **D-A7:** fechas calculadas en UTC o con la zona horaria del PC (Historial, cierre mensual, Caja).
+- **D-A8:** Equipos y Solicitudes consultaban rutas de admin con sesión de operador.
+- **D-A9:** el guion de la migración 34 de Codex usaba una base vieja sucia y un conteo fijo.
+
+Cobertura: **124/124 rutas de la API** verificadas con su efecto, y barrido de permisos sobre 153 combinaciones (ver `CLAUDE_MATRIZ_COBERTURA_TOTAL_EPA.md`). Conciliación peso a peso en `CLAUDE_CONCILIACION_FINAL_COMPLETA.md`.
+
+Decisiones que siguen abiertas:
+- P3/F14: la fórmula de bases ya está **definida** por el propietario.
+- P4: utilidad por hora.
+- P5: hoja de conciliación en el Excel.
+- P6: comportamiento del servidor al cerrar la app.
+- Pedidos manuales después del Cierre: hoy se rechazan, como el resto del dinero.
+
+Commits: `bea002a` (código y pruebas) y el documental. Sin push.

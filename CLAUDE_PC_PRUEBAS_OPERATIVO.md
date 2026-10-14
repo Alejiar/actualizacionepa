@@ -7,10 +7,10 @@ Fecha: 14-oct-2026. Equipo de pruebas del propietario (no es producción).
 | Componente | Estado verificado |
 |---|---|
 | Ejecutable | `C:\cash-buddy-epa\CashBuddy.exe` (781.824 bytes, compilado el 22-jun-2026). Lanzador **WinForms + WebView2, no Electron**. Ejecuta `node dist\index.js` desde `apps\api` y abre `http://localhost:4000` |
-| Versión del código | Commit `db6f17d`. `apps/api/dist/index.js` y `apps/web/out` recompilados el 14-oct-2026 a las 12:25 con `NODE_ENV=production` |
+| Versión del código | Commit `bea002a` (F14, D7, pedidos post-cierre). `apps/api/dist/index.js` y `apps/web/out` recompilados el 14-oct-2026 a las 12:25 con `NODE_ENV=production` |
 | Node.js | v24.16.0 |
 | PostgreSQL | 17, servicio `postgresql-x64-17` automático, puerto 5432 |
-| Base que usa la app | **`cashbuddy_demo`** (DEMO aislada), con las **34 migraciones** aplicadas, incluida la 34 `20261014090000_user_token_version` |
+| Base que usa la app | **`cashbuddy_demo`** (DEMO aislada), con las **36 migraciones**: la 34 (`user_token_version`), la 35 (F14, conversión de saldos auditada en `F14DriverMigration`) y la 36 (D7, correcciones en el Cierre). Respaldo previo a F14: `backups/cashbuddy_demo_pre_f14_20261014_135448.dump` |
 | Base original `cashbuddy` | **Sin tocar**: 33 migraciones, 1 usuario, sin datos operativos. Respaldo: `backups/cashbuddy_pre_demo_20261014_114158.dump`, restaurado en una base temporal y comparado (migraciones, usuario, hash y capital idénticos) |
 | Configuración | `.env` → `cashbuddy_demo`, con `JWT_SECRET`, `ENCRYPTION_KEY` y admin **propios de la DEMO** (no se copiaron secretos productivos). Original: `backups/env_antes_demo_20261014.bak` |
 | Webhook | `WEBHOOK_TOKEN` no está definido en la DEMO: responde 401. La DEMO no recibe webhooks, y el de Cloudflare apunta a producción y no se tocó |
@@ -53,7 +53,7 @@ Detalle de cada movimiento en `CLAUDE_VERIFICACION_TOTAL_EPA.md`.
 
 1. Terminar `node dist\index.js` (Administrador de tareas) y cerrar CashBuddy.
 2. Copiar `backups/env_antes_demo_20261014.bak` sobre `.env`.
-3. **Antes de abrirla**, aplicar la migración 34 a `cashbuddy`: `npm run db:deploy -w @cash-buddy/api`, con respaldo previo. Sin ella el arranque se detiene a propósito porque faltan migraciones.
+3. **Antes de abrirla**, aplicar las migraciones 34–36 a `cashbuddy`: `npm run db:deploy -w @cash-buddy/api`, con respaldo previo. Sin ella el arranque se detiene a propósito porque faltan migraciones.
 
 La DEMO se puede conservar o eliminar (`DROP DATABASE cashbuddy_demo`) cuando ya no se necesite.
 
@@ -61,3 +61,13 @@ La DEMO se puede conservar o eliminar (`DROP DATABASE cashbuddy_demo`) cuando ya
 
 - No se compiló un instalador nuevo de Windows: el ejecutable del lanzador no cambió y usa la compilación del repositorio.
 - Shipday real se usó solo para **leer** y solo durante la importación. Las dos sucursales de la DEMO quedaron **pausadas** para no consumir el cupo de peticiones (~5/min por cuenta) que comparte con producción.
+
+## 7. Actualización (segunda ronda, 14-oct-2026)
+
+- La DEMO se migró a 36 migraciones con respaldo previo. Resultado exacto:
+  - Demo A pasó de un saldo de 15.000 a **comisión 5.400 + base 9.600**.
+  - Total de domiciliarios: 87.600, conservado.
+  - Caja y banco sin cambios: 118.600 / 122.400.
+- Las claves DEMO están en `DEMO_CREDENCIALES.local`. Se cambiaron por una sin caracteres ambiguos.
+- Interfaz: 23 pantallas × 2 roles visitadas sin errores. Corregidos dos casos de 403 con el operador (Equipos y Solicitudes).
+- Los escenarios de `GUIA_MANUAL_PRUEBAS_EPA.md` se ejecutaron sobre una **copia** de la DEMO: los 19 saldos de la guía coinciden con la app.

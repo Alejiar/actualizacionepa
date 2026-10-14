@@ -54,11 +54,11 @@ async function main() {
   rows.sort((a, b) => a.at.getTime() - b.at.getTime() || a.id.localeCompare(b.id));
   let cash = s.initialCash, bank = s.initialBank;
   const lines = rows.map((r, i) => { const pc = cash, pb = bank; cash += r.dCash; bank += r.dBank;
-    return `| ${i + 1} | ${toBogotaDateStr(r.at)} | ${r.fuente} | ${r.detalle.replace(/\|/g, "/").slice(0, 60)} | ${r.persona} | ${r.medio} | ${r.dCash} | ${r.dBank} | ${pc} → ${cash} | ${pb} → ${bank} |`; });
+    return `| ${i + 1} | ${r.id.slice(-8)} | ${toBogotaDateStr(r.at)} | ${r.fuente} | ${r.detalle.replace(/\|/g, "/").slice(0, 60)} | ${r.persona} | ${r.medio} | ${r.dCash} | ${r.dBank} | ${pc} → ${cash} | ${pb} → ${bank} |`; });
   const exp = await dash.getExpectedBalancesForDate(today);
   const ok = exp.cash === cash && exp.bank === bank;
   const md = [`Capital inicial: efectivo ${s.initialCash} · banco ${s.initialBank}`, "",
-    "| # | Fecha | Fuente | Detalle | Domiciliario | Medio | Δ efectivo | Δ banco | Efectivo antes → después | Banco antes → después |", "|---|---|---|---|---|---|---:|---:|---|---|", ...lines, "",
+    "| # | Id | Fecha | Fuente | Detalle | Domiciliario | Medio | Δ efectivo | Δ banco | Efectivo antes → después | Banco antes → después |", "|---|---|---|---|---|---|---|---:|---:|---|---|", ...lines, "",
     `**Saldo reconstruido:** efectivo ${cash} · banco ${bank}. **Saldo esperado de la app:** efectivo ${exp.cash} · banco ${exp.bank}. **${ok ? "CUADRA" : "DIFERENCIA"}**`].join("\n");
   fs.writeFileSync(path.join(__dirname, "conciliacion-demo.md"), md);
   fs.writeFileSync(path.join(__dirname, "conciliacion-demo.json"), JSON.stringify({ ok, cash, bank, expected: exp, rows: rows.length, contables }, null, 2));
