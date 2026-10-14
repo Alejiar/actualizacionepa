@@ -2,6 +2,14 @@
 
 Fecha: 2026-10-13 (sesión 1). Repositorio real: `C:\cash-buddy-epa`. La ruta `C:\EPA DOMICILIOS\cash-buddy-epa` **no existe** en este PC.
 
+## Actualización 2026-10-14
+
+- Corregidos y verificados los 12 defectos de `CODEX_AUDITORIA_UNICA_FINAL.md` (commit `0dba9c5`). Matriz completa en `CLAUDE_CORRECCION_12_DEFECTOS.md`.
+- Nueva migración 34 `20261014090000_user_token_version`, **no aplicada** a la BD de este PC: CashBuddy.exe abortará al arrancar hasta ejecutar `db:deploy` con respaldo.
+- Nueva batería `tests/codex-12-defectos.ts` + `run-codex-12-defectos.cjs` (BD temporal `cashbuddy_claude_12`): 26/26.
+- Siigo, fuera del alcance por instrucción del dueño.
+- Pendiente: push y despliegue (requieren autorización), decisiones del dueño (D7 hoy bloquea, contrapartes parciales, F14…) y el caso de agosto (no está en este PC).
+
 ## Estado de Git
 
 - Rama de trabajo: `claude/entrega-final`, creada desde `main` (`2f430a8`). **No hay push**: `main` ya iba 2 commits por delante de `origin/main` y esta rama suma los commits de abajo.

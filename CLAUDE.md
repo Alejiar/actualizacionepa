@@ -264,6 +264,28 @@ reintentar, y vuelve a abrirlo al terminar.
 - Un movimiento de Caja confirmado (cualquier categoría) solo lo corrige un admin o un
   `EditRequest` aprobado; el usuario normal solo edita pendientes (cobro de domicilios).
 
+### Reglas añadidas al corregir los 12 defectos de Codex (14-oct-2026, ver `CLAUDE_CORRECCION_12_DEFECTOS.md`)
+
+- Sesiones: `User.tokenVersion` viaja en el JWT como `tv`. Cambiar contraseña, rol o estado
+  **debe** pasar por `updateUser` (incrementa la versión). No vuelvas a comparar `iat` con
+  `updatedAt`: tiene un hueco de un segundo.
+- Períodos cerrados: todo registro de dinero con fecha explícita pasa por
+  `assertOpenPeriod` (`lib/period-guard.ts`) dentro de `moneyTransaction`. Día con Cierre o
+  anterior al último `MonthlyClose` → 409 hasta que el dueño defina D7. Un `Movement` cuenta
+  en `movementEffectiveAt()`: Caja, Historial y Movimientos deben usar esa misma fecha.
+- Capital: el ancla es el último `MonthlyClose` con `closedAt <=` la fecha consultada, nunca
+  "el último" a secas. `closeMonth` guarda `snapshot.capitalAnterior`; no lo quites.
+- Contrapartes (`pairWith`): exigen original existente, sin pareja previa, signo opuesto e
+  igual total del grupo. Las parciales se rechazan (regla no definida). El reporte mensual
+  cuenta como pendientes los pares que no cuadran.
+- `POST /bank-transactions` exige `medium` o un split coherente; nunca asumas banco por defecto.
+- Tarifas (Shipday y por hora): enteros ≥ 0 dentro de `MAX_MONEY`; un lote de webhook con una
+  tarifa inválida se rechaza entero. $0 sigue siendo el stub provisional válido.
+- Cifrado: sin clave → `EncryptionKeyError` (503). Nunca reintroduzcas una clave por defecto.
+- `EditRequest`: solo los tipos de la lista `deletable` se pueden borrar; un caso desconocido
+  lanza error y nunca queda "Aprobada" sin efecto. El borrado de `MonthlyClose` no existe.
+- Siigo está fuera del alcance de este repositorio.
+
 - Las migraciones de Prisma (`apps/api/prisma/migrations/**/*.sql`) SÍ deben
   versionarse. El `.gitignore` tiene una regla `*.sql` para respaldos de
   base de datos con una excepción explícita para las migraciones — no la

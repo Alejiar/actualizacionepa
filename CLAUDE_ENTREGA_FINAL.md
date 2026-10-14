@@ -2,6 +2,8 @@
 
 Fecha: 2026-10-13. Repositorio: `C:\cash-buddy-epa`, rama `claude/entrega-final`. Estas son pruebas propias del implementador; **no sustituyen** la auditoría independiente de Codex.
 
+> **Actualización 2026-10-14 — corrección de los 12 defectos de Codex** (`CODEX_AUDITORIA_UNICA_FINAL.md`): F01–F07, S01–S03, M01 y M02 corregidos y verificados en el commit `0dba9c5`. Detalle por defecto en **`CLAUDE_CORRECCION_12_DEFECTOS.md`**. Esa corrección añade la migración 34 (`User.tokenVersion`), la guardia de períodos cerrados (`lib/period-guard.ts`, 409 en días o meses cerrados) y la validación estricta de contrapartes. Siigo queda **fuera del alcance** por instrucción del dueño.
+
 **Veredicto del implementador: no declaro el sistema listo para producción.** El código corregido pasa todas las pruebas locales, pero falta lo que no depende del código: el caso de agosto, la base de producción, Shipday real y varias decisiones del dueño (sección 9).
 
 ## 1. Correcciones efectivas
@@ -66,27 +68,31 @@ Todas en bases PostgreSQL temporales, eliminadas al terminar; Shipday simulado.
 | `tests/run-claude-final.cjs` (modo completo) | 15/15 |
 | Tipos del backend (`tsc --noEmit`) y del frontend | Sin errores |
 | `npm run build` (shared + web + api) | Correcto, 31 páginas exportadas |
+| **14-oct** `tests/run-codex-12-defectos.cjs` (nueva, 26 casos) | 26/26 |
+| **14-oct** reproductor original de Codex (I01–I14) | 13/14 (I09 exige borrar el cierre, contra su propia recomendación; ver `CLAUDE_CORRECCION_12_DEFECTOS.md`, M01) |
+| **14-oct** repetición de 45 + 18 + 15 + 2, tipos y compilación tras la corrección | 45/45, 18/18, 15/15, 2/2, 0 errores, compilación correcta |
 
 ## 6. Compilación
 
-`apps/api/dist/index.js` y `apps/web/out` se recompilaron el 2026-10-13 a las 21:32 desde esta rama. **No se ha reiniciado ningún backend de producción**: en este PC no había backend en ejecución.
+`apps/api/dist/index.js` y `apps/web/out` se recompilaron de nuevo el 2026-10-14 desde el commit `0dba9c5`. **No se ha reiniciado ningún backend de producción**: en este PC no había backend en ejecución. Como la BD de este PC no tiene la migración 34, CashBuddy.exe abortará al arrancar hasta aplicarla con respaldo (ver `CLAUDE_CORRECCION_12_DEFECTOS.md` §4).
 
 ## 7. Migraciones
 
-No agregué migraciones. Hay 33 en el repositorio (las dos últimas son de Codex: `20260928170000_financial_payment_ledger` y `20260928220000_order_manual_override`). La base de este PC tiene las 33 aplicadas. **Producción no se ha comprobado**: no supongo que tenga las mismas; aplicar con `npm run db:deploy -w @cash-buddy/api` tras un respaldo.
+El 13-oct no agregué migraciones. El 14-oct se agregó `20261014090000_user_token_version` (columna `User.tokenVersion INTEGER NOT NULL DEFAULT 0`, aditiva y compatible con las sesiones vigentes). Hay **34** en el repositorio. La base de este PC tiene 33: la nueva **no** se aplicó en ella. **Producción no se ha comprobado**: no supongo que tenga las mismas; aplicar con `npm run db:deploy -w @cash-buddy/api` tras un respaldo.
 
 ## 8. Git
 
-Rama `claude/entrega-final` con los commits `7e51e4d`, `782a9d4` y el documental. **Sin push.** `main` está 2 commits por delante de `origin/main` y esta rama suma 3 más. Los cambios ajenos se dejaron sin commitear (ver `CLAUDE_CONTINUIDAD_SESION_2.md`).
+Rama `claude/entrega-final` con los commits `7e51e4d`, `782a9d4`, el documental `1823195`, la corrección `0dba9c5` y su commit documental. **Sin push.** `main` está 2 commits por delante de `origin/main` y esta rama suma 3 más. Los cambios ajenos se dejaron sin commitear (ver `CLAUDE_CONTINUIDAD_SESION_2.md`).
 
 ## 9. Problemas no resueltos
 
 - **Caso de agosto (Víctor Pérez $102.400, Bryan Alvarado $14.700, total $117.100) y `_fix-august-close.ts`.** No existen en este repositorio ni en este PC, así que no pude investigar la causa raíz. No ejecuté ni escribí ningún script de corrección de datos.
-- **Siigo.** No hay integración Siigo en este código. No se tocó.
+- **Siigo.** Fuera del alcance por instrucción del dueño (14-oct). No hay integración Siigo en este código y no se tocó.
 - **Aislamiento de sucursales por usuario.** No existe relación usuario↔sucursal en el modelo, así que todos los usuarios autenticados ven todas las sucursales. No lo implementé para no inventar reglas de negocio.
 - **Decisiones del dueño:**
   - F14: definición de "Diferencia bases" del mes.
-  - D7: reversiones y ajustes que alteran días ya cerrados.
+  - D7: reversiones y ajustes que alteran días ya cerrados. Desde el 14-oct se **bloquean** con 409 en lugar de alterar cifras cerradas.
+  - Contrapartes parciales (hoy se rechazan) y borrado de cierres mensuales (no implementado).
   - Si la nómina o los ingresos creados por un usuario normal deben quedar pendientes de aprobación (hoy solo los gastos 3/4).
   - Utilidad de clientes por hora en el reporte mensual.
   - Pedidos entregados mientras una sucursal está desactivada.
