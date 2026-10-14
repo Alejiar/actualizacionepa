@@ -1,5 +1,6 @@
 import type { Arqueo, DayData } from "@cash-buddy/shared";
-import { prisma } from "../lib/prisma";
+import { prisma, moneyTransaction } from "../lib/prisma";
+import { assertOpenPeriod, movementEffectiveAt } from "../lib/period-guard";
 import { balancesAtEndOfDay } from "./calc";
 import { toDayData, toMovement } from "./mappers";
 import { getSettings } from "./settings.service";
@@ -286,6 +287,8 @@ export async function updateArqueo(
   slot: "AM" | "PM" | "close",
   arqueo: Arqueo,
 ): Promise<DayData> {
+  return moneyTransaction(async () => {
+  await assertOpenPeriod(date, movementEffectiveAt({ date, createdAt: new Date() }), "El arqueo");
   await ensureDay(date);
   const field = slot === "AM" ? "arqueoAM" : slot === "PM" ? "arqueoPM" : "arqueoClose";
   const updated = await prisma.day.update({
@@ -294,4 +297,5 @@ export async function updateArqueo(
     include: { movements: { orderBy: { createdAt: "asc" } } },
   });
   return toDayData(updated);
+  });
 }

@@ -5,6 +5,8 @@ import { prisma, moneyTransaction } from "../lib/prisma";
 import { toBogotaDateStr } from "../lib/date-range";
 import { applyDebtDelta } from "../services/driver.service";
 import { MAX_MONEY } from "../lib/money-validation";
+import { assertOpenInstant, assertCalendarDate } from "../lib/period-guard";
+import { badRequest } from "../lib/errors";
 
 // Eventos/estados que significan "entregado de verdad".
 const DELIVERED_EVENTS = new Set(["ORDER_COMPLETED", "ORDER_DELIVERED"]);
@@ -61,7 +63,9 @@ function parseDeliveredAt(v: unknown): Date {
   const s = String(v).trim();
   if (/^\d{10,}$/.test(s)) return new Date(Number(s)); // epoch en ms (o s de 10 díg.)
   const d = new Date(s);
-  return isNaN(d.getTime()) ? new Date() : d;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) assertCalendarDate(s.slice(0, 10), "La entrega");
+  if (isNaN(d.getTime())) throw badRequest("Fecha de entrega inválida.");
+  return d;
 }
 
 /**
@@ -147,6 +151,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
         const id = carrier.id ?? order.assignedCarrierId ?? asObj(order.assignedCarrier).id;
         const driver = id == null ? null : await prisma.driver.findUnique({where:{shipdayDriverId_branchId:{shipdayDriverId:String(id),branchId}}});
         if (driver) {
+          await assertOpenInstant(existing.deliveredAt ?? existing.createdAt, "El pedido recibido", branchId);
           await prisma.shipdayOrder.update({where:{id:existing.id},data:{driverId:driver.id}});
           await applyDebtDelta(prisma,driver.id,existing.companyAmount);
           await refreshOrderStats(prisma,{...existing,driverId:driver.id});
@@ -172,6 +177,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
 
     // Respetar el día de arranque de la sucursal (no cargar entregas anteriores).
     if (branch.ordersSince && deliveredAt < branch.ordersSince) { ignored++; continue; }
+    await assertOpenInstant(deliveredAt, "La entrega recibida", branchId);
 
     // Domiciliario asignado (carrier.id en la raíz; compat con otras ubicaciones).
     let driverId: string | null = null;

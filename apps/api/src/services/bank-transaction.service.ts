@@ -2,7 +2,7 @@ import { applyDebtDelta, applyBankToDriver } from "./driver.service";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
 import { badRequest, conflict, notFound } from "../lib/errors";
-import { assertOpenPeriod, isOpenPeriod } from "../lib/period-guard";
+import { assertOpenInstant, financialNow, isOpenPeriod, parseFinancialTimestamp } from "../lib/period-guard";
 import { assertMoney } from "../lib/money-validation";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import * as hourlySvc from "./hourly-client.service";
@@ -69,15 +69,9 @@ export async function create(data: {
     if (!driver) throw notFound("Domiciliario no encontrado");
     driverName = driver.name;
   }
-  // Fecha del movimiento. Ningún movimiento puede quedar fechado en el futuro (se ajusta a
-  // "ahora"). Una fecha explícita de un día anterior debe caer en un período abierto: un día
-  // o mes ya cerrado no se modifica en silencio (decisión D7 pendiente).
-  const now = new Date();
-  let when = data.date ? new Date(data.date) : now;
-  if (Number.isNaN(when.getTime()) || when.getTime() > now.getTime()) when = now;
-  if (when !== now && toBogotaDateStr(when) < toBogotaDateStr(now)) {
-    await assertOpenPeriod(toBogotaDateStr(when), when);
-  }
+  // La fecha solicitada se valida sin normalización ni sustitución silenciosa.
+  const now = await financialNow();
+  let when = data.date !== undefined ? parseFinancialTimestamp(data.date, now) : now;
 
   // ── Contraparte (F01): un pairId solo se asigna a un par que REALMENTE cuadra. ────────
   // Original existente, sin pareja previa, de signo opuesto, mismo importe total (suma del
@@ -103,9 +97,12 @@ export async function create(data: {
     // que ese día ya esté cerrado: entonces cuenta hoy (no altera un día cerrado).
     const originalDay = toBogotaDateStr(original.date);
     when = (await isOpenPeriod(originalDay, original.date)) ? original.date : now;
+    await assertOpenInstant(when);
     pairId = `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await prisma.bankTransaction.updateMany({ where: { id: { in: group.map(r => r.id) } }, data: { pairId } });
   }
+
+  await assertOpenInstant(when);
 
   const base = {
     type: data.type,
@@ -156,6 +153,13 @@ export async function remove(id: string) {
   const rows = original.groupId
     ? await prisma.bankTransaction.findMany({ where: { groupId: original.groupId } })
     : [original];
+
+  // El borrado también rompe la conciliación de la mitad superviviente: ambas
+  // fechas deben estar abiertas, aunque la fila que se borra pertenezca a hoy.
+  const paired = rows.some(r => r.pairId) ? await prisma.bankTransaction.findMany({
+    where: { pairId: { in: rows.flatMap(r => r.pairId ? [r.pairId] : []) } },
+  }) : [];
+  for (const row of [...rows, ...paired]) await assertOpenInstant(row.date);
 
   await prisma.$transaction(async (tx) => {
     for (const row of rows) {
@@ -251,6 +255,7 @@ export async function edit(id: string, values: { amount?: number; description?: 
   if (values.amount == null || values.amount === original.amount) {
     return prisma.bankTransaction.update({where:{id},data:values});
   }
+  await assertOpenInstant(original.date);
   if (!Number.isSafeInteger(values.amount) || values.amount <= 0) throw badRequest("Monto inválido");
   if (original.hourlyShiftId) throw badRequest("Corrige el turno o revierte su cobro desde Clientes por hora.");
   if (original.pairId || original.groupId) throw badRequest("Revierte el movimiento enlazado y regístralo de nuevo con el importe correcto.");

@@ -3,11 +3,11 @@ import { refreshOrderStats } from "../lib/order-stats";
 import * as bankSvc from "./bank-transaction.service";
 import { reverseClientPayment } from "./client.service";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { notFound, badRequest } from "../lib/errors";
+import { notFound, badRequest, conflict } from "../lib/errors";
 import { toBogotaDateStr } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import { applyDebtDelta } from "./driver.service";
-import { assertOpenPeriod, movementEffectiveAt } from "../lib/period-guard";
+import { assertOpenPeriod, assertOpenInstant, movementEffectiveAt } from "../lib/period-guard";
 import { deleteShift as deleteHourlyShift, editShift as editHourlyShift, deleteHourlyBankTx } from "./hourly-client.service";
 
 type ChangeMap = Record<string, { old: string; new: string }>;
@@ -139,6 +139,7 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
   if (!(await delegate.findUnique({ where: { id: entityId } }))) {
     throw notFound("El registro ya no existe; rechaza esta solicitud.");
   }
+  await assertEntityPeriod(entityType, entityId);
   switch (entityType) {
     case "ShipdayOrder": {
       const order = await prisma.shipdayOrder.findUnique({ where: { id: entityId } });
@@ -266,6 +267,7 @@ export async function recalcAllOrders() {
   for (const order of orders) {
     const correct = Math.round(order.deliveryValue * (commissionPercent / 100));
     if (correct !== order.companyAmount) {
+      await assertOpenInstant(order.deliveredAt ?? order.createdAt, "El pedido", order.branchId);
       const delta = correct - order.companyAmount;
       await prisma.$transaction(async (tx) => {
         await tx.shipdayOrder.update({ where: { id: order.id }, data: { companyAmount: correct } });
@@ -290,6 +292,9 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
     const raw = val.new;
     const num = Number(raw);
     newValues[field] = numericFields.has(field) ? num : raw;
+  }
+  if (Object.keys(newValues).some(field => numericFields.has(field))) {
+    await assertEntityPeriod(entityType, entityId);
   }
 
   switch (entityType) {
@@ -357,6 +362,29 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
       break;
     default:
       throw badRequest(`La edición de ${entityType} no está implementada.`);
+  }
+}
+
+/** Guardia compartida por aprobaciones y reversiones; corre dentro de moneyTransaction. */
+async function assertEntityPeriod(entity: string, id: string) {
+  if (entity === "ShiftClose" || entity === "MonthlyClose") {
+    throw conflict("Los cierres históricos no se eliminan ni se reescriben. La corrección requiere definir D7.");
+  }
+  if (entity === "DriverPayment") {
+    const row = await prisma.driverPayment.findUniqueOrThrow({ where: { id } });
+    await assertOpenInstant(row.date, "El pago", row.branchId);
+  } else if (entity === "BaseTransaction") {
+    const row = await prisma.baseTransaction.findUniqueOrThrow({ where: { id } });
+    await assertOpenInstant(row.date, "La base", row.branchId);
+  } else if (entity === "ClientDebt") {
+    const row = await prisma.clientDebt.findUniqueOrThrow({ where: { id } });
+    await assertOpenInstant(row.createdAt, "La deuda");
+  } else if (entity === "Conversion") {
+    const row = await prisma.conversion.findUniqueOrThrow({ where: { id } });
+    await assertOpenInstant(row.date, "La conversión", row.branchId);
+  } else if (entity === "ShipdayOrder") {
+    const row = await prisma.shipdayOrder.findUniqueOrThrow({ where: { id } });
+    await assertOpenInstant(row.deliveredAt ?? row.createdAt, "El pedido", row.branchId);
   }
 }
 

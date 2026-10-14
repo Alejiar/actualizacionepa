@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma, moneyTransaction } from "../lib/prisma";
+import { assertOpenInstant, financialNow } from "../lib/period-guard";
 import { badRequest, notFound } from "../lib/errors";
 import { bogotaDayRange, todayBogota } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, bankLinkedBaseNote } from "../lib/balance-markers";
@@ -105,10 +106,12 @@ export async function getDriverDetail(id: string) {
 
 export async function registerPayment(driverId: string, amount: number, medium: "cash" | "bank", notes?: string, actor?: ActorLike) {
   return moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "El pago del domiciliario");
   if (!Number.isSafeInteger(amount) || amount <= 0) throw badRequest("Monto inválido");
   if (medium !== "cash" && medium !== "bank") throw badRequest("Medio de pago inválido (cash o bank)");
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");
+  await assertOpenInstant(undefined, "El pago del domiciliario", driver.branchId);
 
   // Saldo de base pendiente vía aggregate (no carga todas las filas)
   const [givenAgg, paidAgg] = await Promise.all([
@@ -124,6 +127,7 @@ export async function registerPayment(driverId: string, amount: number, medium: 
   const commissionAlloc = amount - baseAlloc;
 
   // Registra UN solo movimiento (bankTransaction) como registro autoritativo de display y saldo.
+  const recordedAt = await financialNow();
   // BaseTransaction y DriverPayment son contabilidad interna de la deuda del domiciliario;
   // se marcan como bank-linked para que getExpectedBalances y unified-movements los ignoren.
   let payment = null as Awaited<ReturnType<typeof prisma.driverPayment.create>> | null;
@@ -141,6 +145,7 @@ export async function registerPayment(driverId: string, amount: number, medium: 
     const bankTx = await tx.bankTransaction.create({
       data: {
         type: "ingreso",
+        date: recordedAt,
         medium,
         amount,
         description: `Pago domiciliario ${driver.name}${breakdown ? ` (${breakdown})` : ""}${notes ? ` · ${notes}` : ""}`,
@@ -163,6 +168,7 @@ export async function registerPayment(driverId: string, amount: number, medium: 
           driverId,
           branchId: driver.branchId,
           amount: baseAlloc,
+          date: recordedAt,
           cashAmount: medium === "cash" ? baseAlloc : 0,
           bankAmount: medium === "bank" ? baseAlloc : 0,
           type: "pago",
@@ -183,6 +189,7 @@ export async function registerPayment(driverId: string, amount: number, medium: 
           driverId,
           branchId: driver.branchId,
           amount: commissionAlloc,
+          date: recordedAt,
           medium,
           notes: `${BANK_LINKED_PAYMENT_NOTE} · Pago de comisión${notes ? ` · ${notes}` : ""}`,
           createdBy: actor?.id ?? null,
@@ -282,7 +289,9 @@ export async function applyBankToDriver(
     prisma.driver.findUnique({ where: { id: driverId } }),
   ]);
   if (!bankTx) throw notFound("Movimiento bancario no encontrado");
+  await assertOpenInstant(bankTx.date, "La aplicación del ingreso a deuda");
   if (!driver) throw notFound("Domiciliario no encontrado");
+  await assertOpenInstant(bankTx.date, "La aplicación del ingreso a deuda", driver.branchId);
 
   // Una deuda solo baja cuando ENTRA plata. Una salida es plata que la empresa
   // entregó: descontarla de una deuda es contabilidad al revés. Esto ocurrió de
@@ -432,11 +441,14 @@ export async function payCredit(
   actor?: ActorLike
 ) {
   return moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "El pago del crédito");
   if (medium !== "cash" && medium !== "bank") throw badRequest("Medio inválido");
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");
+  await assertOpenInstant(undefined, "El pago del crédito", driver.branchId);
   const creditAmount = driver.creditAmount ?? 0;
   if (creditAmount <= 0) throw badRequest("Este domiciliario no tiene crédito pendiente");
+  const recordedAt = await financialNow();
 
   await prisma.$transaction(async (tx) => {
     // Egreso de la empresa hacia el domiciliario.
@@ -450,6 +462,7 @@ export async function payCredit(
     await tx.bankTransaction.create({
       data: {
         type: "egreso",
+        date: recordedAt,
         medium,
         amount: creditAmount,
         description: `Pago a domiciliario ${driver.name}`,

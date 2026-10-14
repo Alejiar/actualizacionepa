@@ -2,6 +2,7 @@ import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { assertMoney } from "../lib/money-validation";
 import { todayBogota } from "../lib/date-range";
+import { assertCalendarDate, assertOpenPeriod, assertOpenInstant, financialNow } from "../lib/period-guard";
 import type { Actor } from "../lib/actor";
 
 // ─── Cálculo de tiempo y montos ───────────────────────────────────────────────
@@ -10,6 +11,7 @@ import type { Actor } from "../lib/actor";
  *  medianoche (turno nocturno). Devuelve NaN si el formato es inválido. */
 function computeMinutes(start: string, end: string): number {
   const parse = (s: string): number => {
+    if (typeof s !== "string") return NaN;
     const m = /^(\d{1,2}):(\d{2})$/.exec((s ?? "").trim());
     if (!m) return NaN;
     const h = Number(m[1]);
@@ -162,6 +164,19 @@ export async function deleteHourlyClient(id: string) {
 
 // ─── Turnos ───────────────────────────────────────────────────────────────────
 
+async function assertServiceDate(date: unknown) {
+  assertCalendarDate(date, "El turno");
+  if (date > todayBogota()) throw badRequest("La fecha del servicio no puede ser futura.");
+  await assertOpenPeriod(date, date === todayBogota() ? new Date() : new Date(date + "T12:00:00-05:00"), "El turno");
+}
+
+async function assertShiftOpen(shift: { id: string; date: string; driverPaid: boolean; driverPaidAt: Date | null; createdAt: Date }) {
+  await assertServiceDate(shift.date);
+  if (shift.driverPaid) await assertOpenInstant(shift.driverPaidAt ?? shift.createdAt, "El pago del turno");
+  const money = await prisma.bankTransaction.findMany({ where: { hourlyShiftId: shift.id }, select: { date: true } });
+  for (const row of money) await assertOpenInstant(row.date, "El movimiento del turno");
+}
+
 /**
  * Registra un turno y, EN UN SOLO PASO, paga al domiciliario y genera la deuda del cliente:
  *  - crea el turno ya marcado como pagado al domiciliario (driverPaid),
@@ -175,6 +190,10 @@ export async function registerShift(
   input: { driverId?: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; actor?: Actor },
 ) {
   return moneyTransaction(async () => {
+  const serviceDate = input.date === undefined ? todayBogota() : input.date;
+  await assertServiceDate(serviceDate);
+  const paidAt = await financialNow();
+  await assertOpenInstant(paidAt, "El desembolso del turno");
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
   if (!input.driverId) throw badRequest("Selecciona un domiciliario");
@@ -188,7 +207,8 @@ export async function registerShift(
   const { driverAmount, companyAmount, totalAmount } = computeAmounts(client, minutes);
   // Defensa ante tarifas históricas inválidas guardadas antes de esta validación.
   assertMoney(driverAmount, true); assertMoney(companyAmount, true); assertMoney(totalAmount);
-  const medium = input.medium === "bank" ? "bank" : "cash";
+  if (input.medium !== "bank" && input.medium !== "cash") throw badRequest("Medio inválido (cash o bank).");
+  const medium = input.medium;
   const actorId = input.actor?.id ?? null;
   const actorName = input.actor?.name ?? null;
   const deviceId = input.actor?.deviceId ?? null;
@@ -200,7 +220,8 @@ export async function registerShift(
         hourlyClientId: clientId,
         driverId: driver.id,
         driverName: driver.name,
-        date: input.date || todayBogota(),
+        date: serviceDate,
+        createdAt: paidAt,
         startTime: input.startTime.trim(),
         endTime: input.endTime.trim(),
         minutes,
@@ -209,7 +230,7 @@ export async function registerShift(
         totalAmount,
         driverPaid: true,
         driverPaidMedium: medium,
-        driverPaidAt: new Date(),
+        driverPaidAt: paidAt,
         driverPaidBy: actorId,
         driverPaidByName: actorName,
         createdBy: actorId,
@@ -232,7 +253,7 @@ export async function registerShift(
           createdByName: actorName,
           deviceId,
           deviceName,
-          date: new Date(),
+          date: paidAt,
         },
       });
       await tx.hourlyShift.update({ where: { id: shift.id }, data: { driverPaidBankTxId: bankTx.id } });
@@ -258,11 +279,13 @@ export async function registerShift(
  */
 export async function payDriver(shiftId: string, input: { medium: "cash" | "bank"; actor?: Actor }) {
   return moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "El pago del turno");
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId }, include: { hourlyClient: true } });
   if (!shift) throw notFound("Turno no encontrado");
   if (shift.driverPaid) throw badRequest("A este domiciliario ya se le pagó este turno");
   if (shift.driverAmount <= 0) throw badRequest("El turno no tiene valor para el domiciliario");
-  const medium = input.medium === "bank" ? "bank" : "cash";
+  if (input.medium !== "bank" && input.medium !== "cash") throw badRequest("Medio inválido (cash o bank).");
+  const medium = input.medium;
 
   await prisma.$transaction(async (tx) => {
     const bankTx = await tx.bankTransaction.create({
@@ -310,12 +333,14 @@ export async function payClient(
   input: { amount?: number; payAll?: boolean; medium: "cash" | "bank"; actor?: Actor },
 ) {
   return moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "El cobro por hora");
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
   const totalPending = client.pendingDebt;
   if (totalPending <= 0) throw badRequest("El cliente no tiene deuda pendiente");
 
-  const medium = input.medium === "bank" ? "bank" : "cash";
+  if (input.medium !== "bank" && input.medium !== "cash") throw badRequest("Medio inválido (cash o bank).");
+  const medium = input.medium;
   const requested = input.payAll ? totalPending : input.amount;
   assertMoney(requested);
   // Igual que en clientes normales: un abono mayor que la deuda se rechaza completo (antes
@@ -323,15 +348,19 @@ export async function payClient(
   if (requested > totalPending) throw badRequest("El abono supera la deuda pendiente. No se admite sobrepago.");
   const applied = requested;
 
+  const shifts = await prisma.hourlyShift.findMany({
+    where: { hourlyClientId: clientId, driverPaid: true, paid: false },
+    orderBy: { createdAt: "asc" },
+  });
+  const available = shifts.reduce((sum, s) => sum + Math.max(0, s.totalAmount - s.paidAmount), 0);
+  if (available !== totalPending) throw badRequest("El saldo histórico por hora necesita conciliación antes de registrar el cobro.");
+
   return prisma.$transaction(async (tx) => {
-    const shifts = await tx.hourlyShift.findMany({
-      where: { hourlyClientId: clientId, driverPaid: true, paid: false },
-      orderBy: { createdAt: "asc" },
-    });
     let left = applied;
     for (const s of shifts) {
       if (left <= 0) break;
       const remaining = s.totalAmount - s.paidAmount;
+      if (remaining <= 0) continue;
       const apply = Math.min(left, remaining);
       const newPaid = s.paidAmount + apply;
       // Un ingreso POR TURNO, enlazado por hourlyShiftId. Antes era un solo ingreso lump
@@ -394,6 +423,7 @@ export async function editShift(
   return moneyTransaction(async () => {
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId }, include: { hourlyClient: true } });
   if (!shift) throw notFound("Turno no encontrado");
+  await assertShiftOpen(shift);
   if (shift.paidAmount > 0) {
     throw badRequest("Este turno ya tiene cobros del cliente. Para cambiarlo, elimínalo y créalo de nuevo.");
   }
@@ -406,9 +436,11 @@ export async function editShift(
     driverId = drv.id;
     driverName = drv.name;
   }
+  if (input.startTime !== undefined && typeof input.startTime !== "string" || input.endTime !== undefined && typeof input.endTime !== "string") throw badRequest("Horas inválidas.");
   const startTime = (input.startTime ?? shift.startTime).trim();
   const endTime = (input.endTime ?? shift.endTime).trim();
   const date = input.date ?? shift.date;
+  await assertServiceDate(date);
 
   const minutes = computeMinutes(startTime, endTime);
   if (!Number.isFinite(minutes)) throw badRequest("Horas inválidas. Usa el formato HH:MM (24h)");
@@ -434,6 +466,17 @@ export async function editShift(
             description: `Pago domiciliario por hora — ${driverName} (${shift.hourlyClient.name})`,
           },
         });
+      } else if (driverAmount > 0) {
+        // Un turno con tarifa del domiciliario cero no tenía egreso. Si una
+        // corrección abierta lo genera, debe existir dinero además de deuda.
+        const bankTx = await tx.bankTransaction.create({ data: {
+          type: "egreso", medium: shift.driverPaidMedium ?? "cash", amount: driverAmount,
+          description: `Pago domiciliario por hora — ${driverName} (${shift.hourlyClient.name})`,
+          hourlyShiftId: shift.id, noCounterpart: true,
+          date: shift.driverPaidAt ?? shift.createdAt,
+          createdBy: shift.driverPaidBy, createdByName: shift.driverPaidByName,
+        } });
+        await tx.hourlyShift.update({ where: { id: shiftId }, data: { driverPaidBankTxId: bankTx.id } });
       }
       // Ajustar la deuda del cliente por la diferencia del total (aún no cobrada).
       if (deltaTotal !== 0) {
@@ -468,6 +511,7 @@ export async function deleteShift(shiftId: string) {
   return moneyTransaction(async () => {
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId } });
   if (!shift) return;
+  await assertShiftOpen(shift);
 
   await prisma.$transaction(async (tx) => {
     // Toda la huella bancaria del turno (pago al domi + cobros del cliente) en una sola
@@ -510,6 +554,7 @@ export async function deleteHourlyBankTx(bankTxId: string): Promise<boolean> {
   return moneyTransaction(async () => {
   const tx = await prisma.bankTransaction.findUnique({ where: { id: bankTxId } });
   if (!tx || !tx.hourlyShiftId) return false;
+  await assertOpenInstant(tx.date, "La reversión del turno");
 
   const shift = await prisma.hourlyShift.findUnique({ where: { id: tx.hourlyShiftId } });
   if (!shift) {

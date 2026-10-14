@@ -1,6 +1,7 @@
 import { assertMoney } from "../lib/money-validation";
 import type { Settings, UpdateSettingsRequest } from "@cash-buddy/shared";
 import { prisma, moneyTransaction } from "../lib/prisma";
+import { conflict } from "../lib/errors";
 
 const SINGLETON_ID = "singleton";
 
@@ -26,11 +27,19 @@ export async function updateSettings(patch: UpdateSettingsRequest): Promise<Sett
   if (patch.initialCash !== undefined) assertMoney(patch.initialCash, true);
   if (patch.initialBank !== undefined) assertMoney(patch.initialBank, true);
   // El capital es el ancla de la caja esperada: se escribe serializado con la caja.
-  const s = await moneyTransaction(() => prisma.settings.upsert({
+  const s = await moneyTransaction(async () => {
+    const current = await prisma.settings.findUnique({ where: { id: SINGLETON_ID } });
+    const changingCapital = (patch.initialCash !== undefined && patch.initialCash !== current?.initialCash)
+      || (patch.initialBank !== undefined && patch.initialBank !== current?.initialBank);
+    if (changingCapital && await prisma.shiftClose.count()) {
+      throw conflict("Cambiar el capital inicial alteraría días cerrados. Usa el cierre mensual para el nuevo capital; D7 sigue pendiente.");
+    }
+    return prisma.settings.upsert({
     where: { id: SINGLETON_ID },
     update: patch,
     create: { id: SINGLETON_ID, ...patch },
-  }));
+    });
+  });
   return {
     companyName: s.companyName,
     brandName: s.brandName,

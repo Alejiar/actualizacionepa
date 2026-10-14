@@ -64,9 +64,8 @@ export function UnifiedBankWizard({ open, onOpenChange, onDone, prefill }: Props
         amount: effectiveAmount,
         ...(isMixed ? { cashAmount: cashPart, bankAmount: bankPart } : {}),
         description: description || (type === "ingreso" ? "Ingreso" : "Salida"),
-        // Anclar al mediodía de Bogotá (-05:00) para que el movimiento caiga SIEMPRE
-        // dentro del día calendario de Bogotá, sin importar la zona horaria del equipo.
-        date: new Date(txDate + "T12:00:00-05:00").toISOString(),
+        // Enviar el día; el servidor determina su instante contable en Bogotá.
+        date: txDate,
         ...(pairWith ? { pairWith } : {}),
         ...(!pairWith ? { noCounterpart } : {}),
       });

@@ -49,6 +49,13 @@ export async function getExpectedBalancesForDate(date: string) {
 }
 
 async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: Date }) {
+  const dayClose = await prisma.shiftClose.findUnique({
+    where: { date_shift: { date: today, shift: "close" } },
+    select: { closedAt: true, totalExpected: true, bankExpected: true },
+  });
+  // Una consulta histórica cerrada conserva el corte registrado. Un cierre mensual
+  // posterior del mismo día no puede sustituir su capital ni su esperado guardado.
+  const cutoff = dayClose && dayClose.closedAt < todayRange.lte ? dayClose.closedAt : todayRange.lte;
   // ANCLA = ÚLTIMO CIERRE: un cierre de mes es un punto de reinicio. El período
   // actual arranca con el capital definido en ese cierre y va sumando TODOS los
   // flujos registrados DESPUÉS del mes cerrado. Si no hay cierres, arranca con el
@@ -62,7 +69,7 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     orderBy: { closedAt: "asc" },
     select: { closedAt: true, initialCash: true, initialBank: true, snapshot: true },
   });
-  const anchor = [...closes].reverse().find(c => c.closedAt.getTime() <= todayRange.lte.getTime());
+  const anchor = [...closes].reverse().find(c => c.closedAt.getTime() <= cutoff.getTime());
 
   // periodStart = MOMENTO del cierre ancla. Sin ancla (fecha anterior a todo cierre, o sin
   // cierres): capital vigente ANTES del primer cierre, desde el inicio del mes consultado.
@@ -82,7 +89,7 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     baseBank = prev?.bank ?? settings?.initialBank ?? 0;
     periodStart = monthRange(today.slice(0, 7)).gte;
   }
-  const cumRange = { gte: periodStart, lte: todayRange.lte };
+  const cumRange = { gte: periodStart, lte: cutoff };
 
   const [movementRows, bankTxs, convs, driverPayments, bases, clientPays, clientDebtsOut] = await Promise.all([
     // Caja: por FECHA OPERATIVA (movementEffectiveAt), la misma que usan el Historial y
@@ -104,7 +111,7 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
   ]);
   const movements = movementRows.filter(m => {
     const t = movementEffectiveAt(m).getTime();
-    return t > periodStart.getTime() && t <= todayRange.lte.getTime();
+    return t > periodStart.getTime() && t <= cutoff.getTime();
   });
 
   // Gastos/nómina del sistema original (solo confirmados)
@@ -154,7 +161,7 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     else if (d.medium === "bank") baseBank -= d.amount;
   }
 
-  return { cash: baseCash, bank: baseBank };
+  return { cash: dayClose?.totalExpected ?? baseCash, bank: dayClose?.bankExpected ?? baseBank };
 }
 
 export async function getDashboard(branchId?: string, date?: string) {

@@ -46,7 +46,7 @@ export async function payClient(req: Request, res: Response) {
     req.params.id,
     amount,
     payAll === true,
-    medium === "bank" ? "bank" : "cash",
+    medium,
     { cashAmount, bankAmount, actor },
   ));
 }

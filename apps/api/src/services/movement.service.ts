@@ -3,7 +3,7 @@ import type { CreateMovementRequest, Movement, UpdateMovementRequest } from "@ca
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { notFound, badRequest, forbidden } from "../lib/errors";
 import { ensureDay } from "./day.service";
-import { assertOpenPeriod, movementEffectiveAt } from "../lib/period-guard";
+import { assertOpenPeriod, financialNow, movementEffectiveAt } from "../lib/period-guard";
 import { toMovement } from "./mappers";
 
 function nowTime(): string {
@@ -21,15 +21,17 @@ export async function addMovement(input: CreateMovementRequest): Promise<Movemen
   return moneyTransaction(async () => {
   assertMoney(input.amount);
   validateExpense(input);
+  const createdAt = await financialNow();
   // Solo movimientos CONFIRMADOS afectan la caja; esos deben caer en un período abierto.
   // Un pendiente se valida al aprobarse (approveMovement).
   if ((input.status ?? "confirmed") === "confirmed") {
-    await assertOpenPeriod(input.date, movementEffectiveAt({ date: input.date, createdAt: new Date() }));
+    await assertOpenPeriod(input.date, movementEffectiveAt({ date: input.date, createdAt }));
   }
   await ensureDay(input.date);
   const row = await prisma.movement.create({
     data: {
       date: input.date,
+      createdAt,
       time: input.time ?? nowTime(),
       category: input.category,
       type: input.type,
@@ -94,6 +96,7 @@ export async function deleteMovement(id: string): Promise<void> {
   const exists = await prisma.movement.findUnique({ where: { id } });
   if (!exists) throw notFound("Movimiento no encontrado");
   if (isExpense(exists.category) && exists.status === "confirmed") throw badRequest("Solicita la eliminación y su aprobación para revertir un gasto confirmado.");
+  if (exists.status === "confirmed") await assertOpenPeriod(exists.date, movementEffectiveAt(exists));
   await prisma.movement.delete({ where: { id } });
   });
 }

@@ -3,6 +3,7 @@ import { prisma, moneyTransaction } from "../lib/prisma";
 import { conflict } from "../lib/errors";
 import { bogotaMonthRange as monthRange } from "../lib/date-range";
 import { reconcileBasePending } from "../lib/base-balance";
+import { financialNow } from "../lib/period-guard";
 
 /**
  * Reporte mensual con la lógica del Excel.
@@ -140,8 +141,14 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     where: { date: range, driverId: null, noCounterpart: false, pairId: { not: null } },
     select: { id: true, type: true, amount: true, description: true, pairId: true },
   });
+  // La integridad pertenece al grupo completo. Los filtros anteriores solo deciden
+  // qué filas se presentan/reconocen en este período, nunca si el par es válido.
+  const pairIds = [...new Set(pairedRows.map(r => r.pairId!))];
+  const wholePairs = pairIds.length ? await prisma.bankTransaction.findMany({
+    where: { pairId: { in: pairIds } }, select: { type: true, amount: true, pairId: true },
+  }) : [];
   const pairNet = new Map<string, { ing: number; egr: number }>();
-  for (const r of pairedRows) {
+  for (const r of wholePairs) {
     const g = pairNet.get(r.pairId!) ?? { ing: 0, egr: 0 };
     if (r.type === "ingreso") g.ing += r.amount; else g.egr += r.amount;
     pairNet.set(r.pairId!, g);
@@ -375,10 +382,12 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
   // que puede ser base ya saldada con crédito/comisión). Misma lógica que usa la tarjeta al leer.
   const basesPendingReconciled = await getMonthBasePendingReconciled(month, branchId ?? null);
 
+  const closedAt = await financialNow();
   return prisma.monthlyClose.create({
     data: {
       branchId: branchId ?? null,
       month,
+      closedAt,
       totalOrders,
       totalValue,
       companyTotal,

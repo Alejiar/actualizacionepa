@@ -1,4 +1,5 @@
 import { prisma, moneyTransaction } from "../lib/prisma";
+import { conflict } from "../lib/errors";
 
 /**
  * Reinicia TODOS los datos operativos del sistema.
@@ -10,6 +11,9 @@ import { prisma, moneyTransaction } from "../lib/prisma";
  */
 export async function resetAll(): Promise<void> {
   return moneyTransaction(async () => {
+  if (await prisma.shiftClose.count() || await prisma.monthlyClose.count()) {
+    throw conflict("El reinicio no puede borrar cierres históricos. Conserva la base y su respaldo; D7 sigue pendiente.");
+  }
   // Orden respetando foreign keys:
   // Primero los hijos, luego los padres.
   await prisma.$transaction([

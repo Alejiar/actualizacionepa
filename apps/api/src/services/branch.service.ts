@@ -6,6 +6,7 @@ import { notFound, conflict } from "../lib/errors";
 import { toBogotaDateStr, todayBogota } from "../lib/date-range";
 import { applyDebtDelta } from "./driver.service";
 import { MAX_MONEY } from "../lib/money-validation";
+import { assertOpenInstant } from "../lib/period-guard";
 
 // ─── Cache de settings (evita 1 query por cada orden sincronizada) ────────────
 let _settingsCache: { shipdayCommission: number } | null = null;
@@ -383,6 +384,8 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
       !existing.shipdayOrderId.startsWith("manual-"); // los manuales no se sincronizan
     const needsDriver = !existing.driverId && !!driverId && existing.companyAmount > 0;
     if (!isZeroStub && !needsDriver) return false;
+      await assertOpenInstant(existing.deliveredAt ?? existing.createdAt, "El pedido sincronizado", branchId);
+      if (isZeroStub) await assertOpenInstant(p.deliveredAt, "La entrega sincronizada", branchId);
     if (!isZeroStub) {
       await prisma.$transaction(async tx => {
         await tx.shipdayOrder.update({where:{id:existing.id},data:{driverId}});
@@ -421,7 +424,8 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
     return true;
   }
 
-  // Todas las escrituras en una sola transacción — previene datos inconsistentes en crash
+    await assertOpenInstant(p.deliveredAt, "La entrega sincronizada", branchId);
+    // Todas las escrituras en una sola transacción — previene datos inconsistentes en crash
   await prisma.$transaction(async (tx) => {
     await tx.shipdayOrder.create({
       data: {

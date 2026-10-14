@@ -6,7 +6,7 @@ function debtMedium(value:unknown) { if(value != null && value !== "cash" && val
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { todayBogota } from "../lib/date-range";
-import { assertOpenPeriod } from "../lib/period-guard";
+import { assertOpenInstant, assertCalendarDate, financialNow } from "../lib/period-guard";
 
 // Usuario + equipo (PC) que hace la acción. Compatible con getActor(req).
 type ActorLike = { id?: string | null; name?: string | null; deviceId?: string | null; deviceName?: string | null };
@@ -54,12 +54,15 @@ export async function createClient(data: {
 
   // Si hay deuda inicial, registrarla y reflejarla en el saldo
   if (initialDebt && initialDebt > 0) {
+    const recordedAt = await financialNow();
+    await assertOpenInstant(recordedAt, "La deuda inicial");
     await prisma.$transaction([
       prisma.clientDebt.create({
         data: {
           clientId: client.id,
           description: initialDebtDescription?.trim() || "Deuda inicial",
           amount: Math.round(initialDebt),
+          createdAt: recordedAt,
           medium: initialDebtMedium ?? null,
         },
       }),
@@ -97,17 +100,15 @@ export async function addDebt(clientId: string, description: string, amount: num
   // Fecha opcional: debe ser un día real (no "2026-02-31") y no futuro. Una fecha futura
   // dejaba un préstamo en efectivo fuera de la caja de hoy aunque el dinero salió hoy.
   if (date != null && date !== "") {
-    const ok = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
-      && new Date(date + "T12:00:00-05:00").toLocaleDateString("en-CA", { timeZone: "America/Bogota" }) === date;
-    if (!ok) throw badRequest("Fecha inválida. Usa el formato AAAA-MM-DD.");
+    assertCalendarDate(date, "La deuda");
     if (date > todayBogota()) throw badRequest("La fecha de la deuda no puede ser futura.");
-    // Fecha anterior: no puede caer en un día/mes ya cerrado (D7 pendiente).
-    if (date < todayBogota()) await assertOpenPeriod(date, new Date(date + "T12:00:00-05:00"), "La deuda");
   }
+  const debtAt = date && date !== todayBogota() ? new Date(date + "T12:00:00-05:00") : await financialNow();
+  await assertOpenInstant(debtAt, "La deuda");
   if (!(await prisma.client.findUnique({ where: { id: clientId }, select: { id: true } }))) throw notFound("Cliente no encontrado");
   const [debt] = await prisma.$transaction([
     prisma.clientDebt.create({
-      data: { clientId, description, amount, medium: medium ?? null, createdBy: actor?.id ?? null, createdByName: actor?.name ?? null, deviceId: actor?.deviceId ?? null, deviceName: actor?.deviceName ?? null, ...(date ? { createdAt: new Date(date + "T12:00:00-05:00") } : {}) },
+      data: { clientId, description, amount, medium: medium ?? null, createdBy: actor?.id ?? null, createdByName: actor?.name ?? null, deviceId: actor?.deviceId ?? null, deviceName: actor?.deviceName ?? null, createdAt: debtAt },
     }),
     prisma.client.update({
       where: { id: clientId },
@@ -158,6 +159,7 @@ export async function registerClientPayment(
   assertMoney(requested);
   if (requested > available) throw badRequest("El abono supera la deuda pendiente. No se admite sobrepago de clientes.");
   const applied = requested;
+  await assertOpenInstant(undefined, "El abono");
   if (applied <= 0) throw badRequest("El cliente no tiene deuda pendiente");
   let left = applied, cashPool = split ? cashIn : (medium === "cash" ? applied : 0);
   for (const debt of debts) {
@@ -205,6 +207,7 @@ export async function reverseClientPayment(id: string) {
   return moneyTransaction(async () => {
   const payment = await prisma.clientDebtPayment.findUnique({where:{id}});
   if (!payment) throw badRequest("El abono ya no existe. Actualiza Movimientos.");
+  await assertOpenInstant(payment.paidAt, "La reversión del abono");
   const debt = await prisma.clientDebt.findUniqueOrThrow({where:{id:payment.debtId}});
   await prisma.clientDebtPayment.delete({where:{id}});
   const latest = await prisma.clientDebtPayment.findFirst({where:{debtId:debt.id},orderBy:{paidAt:"desc"}});

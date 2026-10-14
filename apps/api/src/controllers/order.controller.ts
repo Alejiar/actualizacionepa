@@ -4,15 +4,18 @@ import type { Request, Response } from "express";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { toBogotaDateStr } from "../lib/date-range";
+import { assertOpenInstant, financialNow } from "../lib/period-guard";
 
 export async function manualCreate(req: Request, res: Response) {
   const result = await moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "El pedido manual");
   const { branchId, driverId, deliveryValue, orderNumber, customerName, clientId, addToClientDebt, notes } = req.body;
   if (!branchId || !Number.isSafeInteger(deliveryValue) || deliveryValue <= 0) throw badRequest("branchId y deliveryValue son requeridos");
 
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw notFound("Sucursal no encontrada");
   if (!branch.active) throw badRequest("La sucursal está desactivada");
+  await assertOpenInstant(undefined, "El pedido manual", branch.id);
   if (driverId) {
     const driver = await prisma.driver.findUnique({where:{id:driverId}});
     if (!driver || driver.branchId !== branchId) throw badRequest("El domiciliario no pertenece a esta sucursal");
@@ -26,6 +29,7 @@ export async function manualCreate(req: Request, res: Response) {
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
   const commissionPercent = settings?.shipdayCommission ?? 30;
   const companyAmount = Math.round(deliveryValue * (commissionPercent / 100));
+  const recordedAt = await financialNow();
 
   const order = await prisma.$transaction(async (tx) => {
     const created = await tx.shipdayOrder.create({
@@ -40,7 +44,8 @@ export async function manualCreate(req: Request, res: Response) {
         clientId: clientId || null,
         addToClientDebt: addToClientDebt === true,
         status: "DELIVERED",
-        deliveredAt: new Date(),
+        deliveredAt: recordedAt,
+        createdAt: recordedAt,
         rawData: { manual: true, notes },
       },
       include: { client: { select: { id: true, name: true } } },
@@ -60,7 +65,7 @@ export async function manualCreate(req: Request, res: Response) {
     if (clientId && addToClientDebt) {
       const desc = `Domicilio${orderNumber ? ` #${orderNumber}` : ""} — ${new Date().toLocaleDateString("es-CO")}`;
       await tx.clientDebt.create({
-        data: { sourceOrderId: created.id, clientId, description: desc, amount: Math.round(deliveryValue) },
+        data: { sourceOrderId: created.id, clientId, description: desc, amount: Math.round(deliveryValue), createdAt: recordedAt },
       });
       await tx.client.update({
         where: { id: clientId },

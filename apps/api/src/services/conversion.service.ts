@@ -1,6 +1,6 @@
 import { assertMoney } from "../lib/money-validation";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { assertOpenPeriod } from "../lib/period-guard";
+import { assertOpenInstant, financialNow, parseFinancialTimestamp } from "../lib/period-guard";
 import { notFound, badRequest } from "../lib/errors";
 import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
 
@@ -34,10 +34,9 @@ export async function createConversion(input: {
   if (!branch) throw notFound("Sucursal no encontrada");
   assertMoney(input.amount);
   if (input.type !== "banco_a_efectivo" && input.type !== "efectivo_a_banco") throw badRequest("Tipo de conversión inválido.");
-  const now = new Date();
-  const when = input.date ? new Date(input.date) : now;
-  if (Number.isNaN(when.getTime()) || when.getTime() > now.getTime()) throw badRequest("Fecha de conversión inválida o futura.");
-  if (toBogotaDateStr(when) < toBogotaDateStr(now)) await assertOpenPeriod(toBogotaDateStr(when), when, "La conversión");
+  const now = await financialNow();
+  const when = input.date !== undefined ? parseFinancialTimestamp(input.date, now, "La conversión") : now;
+  await assertOpenInstant(when, "La conversión", input.branchId);
 
   // El domiciliario es solo informativo: NO altera su deuda.
   let driverName: string | undefined;
@@ -69,6 +68,7 @@ export async function deleteConversion(id: string) {
   return moneyTransaction(async () => {
     const exists = await prisma.conversion.findUnique({ where: { id } });
     if (!exists) throw notFound("Conversión no encontrada");
+    await assertOpenInstant(exists.date, "La conversión", exists.branchId);
     await prisma.conversion.delete({ where: { id } });
   });
 }

@@ -1,6 +1,7 @@
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { conflict } from "../lib/errors";
 import { todayBogota } from "../lib/date-range";
+import { assertOpenPeriod, financialNow, movementEffectiveAt } from "../lib/period-guard";
 
 export interface Denominations {
   bills: { value: number; qty: number }[];
@@ -89,6 +90,8 @@ export async function registerShift(data: {
       "Solicita una edición autorizada para modificarlo.",
     );
   }
+  await assertOpenPeriod(data.date, movementEffectiveAt({ date: data.date, createdAt: new Date() }), "El cierre");
+  const closedAt = await financialNow();
 
   return prisma.shiftClose.upsert({
     where: { date_shift: { date: data.date, shift: data.shift } },
@@ -103,11 +106,12 @@ export async function registerShift(data: {
       bankExpected,
       bankDifference,
       notes: data.notes,
-      closedAt: new Date(),
+      closedAt,
       locked: true,
     },
     create: {
       date: data.date,
+      closedAt,
       shift: data.shift,
       receivedBy: data.receivedBy,
       handedBy: data.handedBy,
@@ -129,8 +133,7 @@ export async function registerShift(data: {
 
 export async function deleteShift(id: string) {
   return moneyTransaction(async () => {
-  await prisma.shiftClose.delete({ where: { id } });
-  return { ok: true };
+  throw conflict("Los cierres históricos no se eliminan. La corrección requiere definir D7.");
 
   });
 }

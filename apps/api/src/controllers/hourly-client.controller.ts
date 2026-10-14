@@ -29,7 +29,7 @@ export async function registerShift(req: Request, res: Response) {
   res.status(201).json(
     await svc.registerShift(req.params.id, {
       driverId, startTime, endTime, date,
-      medium: medium === "bank" ? "bank" : "cash",
+      medium,
       actor: getActor(req),
     }),
   );
@@ -41,7 +41,7 @@ export async function payClient(req: Request, res: Response) {
     await svc.payClient(req.params.id, {
       amount,
       payAll: payAll === true,
-      medium: medium === "bank" ? "bank" : "cash",
+      medium,
       actor: getActor(req),
     }),
   );
@@ -50,7 +50,7 @@ export async function payClient(req: Request, res: Response) {
 export async function payDriver(req: Request, res: Response) {
   const { medium } = req.body;
   res.json(
-    await svc.payDriver(req.params.id, { medium: medium === "bank" ? "bank" : "cash", actor: getActor(req) }),
+    await svc.payDriver(req.params.id, { medium, actor: getActor(req) }),
   );
 }
 

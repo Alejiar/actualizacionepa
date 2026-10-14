@@ -52,3 +52,6 @@ backups/
 *.suo
 *.sln
 *.sw?
+
+# Fixtures y respaldo ficticio de pruebas de migración
+apps/api/tests/results-m34/

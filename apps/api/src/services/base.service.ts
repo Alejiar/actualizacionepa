@@ -3,6 +3,8 @@ import { notFound, badRequest } from "../lib/errors";
 import { applyDebtDelta } from "./driver.service";
 import { bogotaOpenRange } from "../lib/date-range";
 import { reconcileBasePending } from "../lib/base-balance";
+import { assertOpenInstant, financialNow } from "../lib/period-guard";
+import { assertMoney } from "../lib/money-validation";
 
 // Eliminar una base (admin directo): revierte el efecto en la deuda del domiciliario.
 // Usa applyDebtDelta (netea contra el crédito y nunca deja pendingDebt negativo) en
@@ -13,6 +15,7 @@ export async function removeBase(id: string) {
   return moneyTransaction(async () => {
   const base = await prisma.baseTransaction.findUnique({ where: { id } });
   if (!base) throw notFound("Base no encontrada");
+  await assertOpenInstant(base.date, "La base", base.branchId);
   if (base.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos, no su desglose de base.");
   // entrega subió la deuda → al borrar baja (−amount); pago la bajó → al borrar sube (+amount)
   const delta = base.type === "entrega" ? -base.amount : base.amount;
@@ -30,6 +33,12 @@ export async function editBase(id: string, input: { cashAmount?: number; bankAmo
   return moneyTransaction(async () => {
   const base = await prisma.baseTransaction.findUnique({ where: { id } });
   if (!base) throw notFound("Base no encontrada");
+  if (input.amount !== undefined || input.cashAmount !== undefined || input.bankAmount !== undefined) {
+    await assertOpenInstant(base.date, "La base", base.branchId);
+    if (input.amount !== undefined) assertMoney(input.amount);
+    if (input.cashAmount !== undefined) assertMoney(input.cashAmount, true);
+    if (input.bankAmount !== undefined) assertMoney(input.bankAmount, true);
+  }
   if (base.bankTransactionId) throw badRequest("Corrige el cobro original en Movimientos, no su desglose de base.");
 
   let cashAmount: number;
@@ -60,6 +69,8 @@ export async function editBase(id: string, input: { cashAmount?: number; bankAmo
   }
 
   if (!Number.isSafeInteger(newAmount) || newAmount <= 0 || cashAmount < 0 || bankAmount < 0) throw badRequest("El monto debe ser mayor a 0");
+  assertMoney(newAmount);
+  if ((input.cashAmount !== undefined || input.bankAmount !== undefined) && input.amount !== undefined && input.amount !== newAmount) throw badRequest("El total no coincide con efectivo más banco.");
   // Ajuste por la diferencia, neteado contra el crédito (entrega suma; pago resta).
   const sign = base.type === "entrega" ? 1 : -1;
   const delta = sign * (newAmount - base.amount);
@@ -91,16 +102,24 @@ export async function listBases(branchId?: string, driverId?: string, from?: str
 // Acepta split efectivo/transferencia combinable. amount = cash + bank.
 export async function giveBase(driverId: string, input: { cashAmount?: number; bankAmount?: number; amount?: number; notes?: string; createdBy?: string | null; createdByName?: string | null; deviceId?: string | null; deviceName?: string | null }) {
   return moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "La entrega de base");
+  if (input.amount !== undefined) assertMoney(input.amount);
+  if (input.cashAmount !== undefined) assertMoney(input.cashAmount, true);
+  if (input.bankAmount !== undefined) assertMoney(input.bankAmount, true);
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");
+  await assertOpenInstant(undefined, "La entrega de base", driver.branchId);
   const cashAmount = Math.round(input.cashAmount ?? 0);
   const bankAmount = Math.round(input.bankAmount ?? 0);
   const amount = (cashAmount + bankAmount) || Math.round(input.amount ?? 0);
+  assertMoney(amount);
+  if ((input.cashAmount !== undefined || input.bankAmount !== undefined) && input.amount !== undefined && input.amount !== cashAmount + bankAmount) throw badRequest("El total no coincide con efectivo más banco.");
   if (!Number.isSafeInteger(amount) || amount <= 0 || cashAmount < 0 || bankAmount < 0) throw badRequest("El monto debe ser mayor a 0");
 
+  const recordedAt = await financialNow();
   const tx = await prisma.$transaction(async (txc) => {
     const created = await txc.baseTransaction.create({
-      data: { driverId, branchId: driver.branchId, amount, cashAmount, bankAmount, type: "entrega", notes: input.notes, createdBy: input.createdBy ?? null, createdByName: input.createdByName ?? null, deviceId: input.deviceId ?? null, deviceName: input.deviceName ?? null },
+      data: { driverId, branchId: driver.branchId, amount, cashAmount, bankAmount, type: "entrega", date: recordedAt, notes: input.notes, createdBy: input.createdBy ?? null, createdByName: input.createdByName ?? null, deviceId: input.deviceId ?? null, deviceName: input.deviceName ?? null },
     });
     // Entregar base aumenta lo que debe, neteando contra cualquier crédito a favor.
     await applyDebtDelta(txc, driverId, amount);
@@ -113,11 +132,18 @@ export async function giveBase(driverId: string, input: { cashAmount?: number; b
 
 export async function payBase(driverId: string, input: { cashAmount?: number; bankAmount?: number; amount?: number; notes?: string; createdBy?: string | null; createdByName?: string | null; deviceId?: string | null; deviceName?: string | null }) {
   return moneyTransaction(async () => {
+  await assertOpenInstant(undefined, "La devolución de base");
+  if (input.amount !== undefined) assertMoney(input.amount);
+  if (input.cashAmount !== undefined) assertMoney(input.cashAmount, true);
+  if (input.bankAmount !== undefined) assertMoney(input.bankAmount, true);
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");
+  await assertOpenInstant(undefined, "La devolución de base", driver.branchId);
   const cashAmount = Math.round(input.cashAmount ?? 0);
   const bankAmount = Math.round(input.bankAmount ?? 0);
   const amount = (cashAmount + bankAmount) || Math.round(input.amount ?? 0);
+  assertMoney(amount);
+  if ((input.cashAmount !== undefined || input.bankAmount !== undefined) && input.amount !== undefined && input.amount !== cashAmount + bankAmount) throw badRequest("El total no coincide con efectivo más banco.");
   if (!Number.isSafeInteger(amount) || amount <= 0 || cashAmount < 0 || bankAmount < 0) throw badRequest("El monto debe ser mayor a 0");
 
   // Un "pago de base" es la DEVOLUCIÓN de una base prestada: solo tiene sentido si el
@@ -138,9 +164,10 @@ export async function payBase(driverId: string, input: { cashAmount?: number; ba
     throw badRequest(`El pago de base ($${amount.toLocaleString("es-CO")}) supera la base pendiente ($${basePending.toLocaleString("es-CO")}). Ajusta el monto: no se puede devolver más base de la que se debe.`);
   }
 
+  const recordedAt = await financialNow();
   const tx = await prisma.$transaction(async (txc) => {
     const created = await txc.baseTransaction.create({
-      data: { driverId, branchId: driver.branchId, amount, cashAmount, bankAmount, type: "pago", notes: input.notes, createdBy: input.createdBy ?? null, createdByName: input.createdByName ?? null, deviceId: input.deviceId ?? null, deviceName: input.deviceName ?? null },
+      data: { driverId, branchId: driver.branchId, amount, cashAmount, bankAmount, type: "pago", date: recordedAt, notes: input.notes, createdBy: input.createdBy ?? null, createdByName: input.createdByName ?? null, deviceId: input.deviceId ?? null, deviceName: input.deviceName ?? null },
     });
     // Devolver base reduce la deuda; si excede, queda como crédito (no deuda negativa).
     await applyDebtDelta(txc, driverId, -amount);

@@ -10,8 +10,10 @@ if(!['localhost','127.0.0.1'].includes(u.hostname))throw Error('No local');
 const pg={...process.env,PGHOST:u.hostname,PGPORT:u.port||'5432',PGUSER:decodeURIComponent(u.username),PGPASSWORD:decodeURIComponent(u.password),PGDATABASE:'postgres'};
 function sql(s,db='postgres'){const r=cp.spawnSync('C:/Program Files/PostgreSQL/17/bin/psql.exe',['-X','-v','ON_ERROR_STOP=1','-At','-c',s],{env:{...pg,PGDATABASE:db},encoding:'utf8'});if(r.status)throw Error(r.stderr);return r.stdout.trim()}
 const results=[];
+// Un nombre reservado de prueba no autoriza borrar una base ajena preexistente.
+for(const name of ['cashbuddy_codex_fresh_v2','cashbuddy_codex_upgrade_v2'])assert.equal(sql("SELECT count(*) FROM pg_database WHERE datname='"+name+"'"),'0','Conserva la base preexistente '+name);
 for(const name of ['cashbuddy_codex_fresh_v2','cashbuddy_codex_upgrade_v2']){
- assert.notEqual(u.pathname,'/'+name);sql('DROP DATABASE IF EXISTS '+name);sql('CREATE DATABASE '+name);const test=new URL(u);test.pathname='/'+name;
+ assert.notEqual(u.pathname,'/'+name);sql('CREATE DATABASE '+name);const test=new URL(u);test.pathname='/'+name;
  const env={...process.env,DATABASE_URL:test.toString(),JWT_SECRET:'test-only',ADMIN_EMAIL:'migration@test.invalid',ADMIN_PASSWORD:'Test-Only-2026',NODE_ENV:'test'};
  function run(label,args){const r=cp.spawnSync(process.execPath,args,{cwd:root+'/apps/api',env,encoding:'utf8',timeout:120000});fs.writeFileSync(__dirname+'/'+name+'-'+label+'.log',(r.stdout||'')+(r.stderr||''));assert.equal(r.status,0,label+' falló')}
  const migrate=dir=>run('migrate-'+(dir===old?'old':'new'),[root+'/node_modules/prisma/build/index.js','migrate','deploy','--schema',dir+'/apps/api/prisma/schema.prisma']);
