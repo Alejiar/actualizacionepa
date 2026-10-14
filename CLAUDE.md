@@ -229,9 +229,13 @@ npm run build -w @cash-buddy/api   # tsup -> apps/api/dist/index.js
 npm run build -w @cash-buddy/web   # next build -> apps/web/out (export estático)
 ```
 
-Y luego reiniciar el proceso `node dist\index.js` (o cerrar y volver a abrir
-`CashBuddy.exe`, que lo relanza solo). Si el cambio no se aplica, casi
-siempre es porque faltó este paso.
+Y luego reiniciar el proceso `node dist\index.js`. **Cerrar y volver a abrir
+`CashBuddy.exe` NO basta**: al cerrar la ventana el backend sigue vivo (atiende a
+otros equipos por la red/Tailscale) y al reabrir el lanzador *reutiliza* el
+servidor que ya escucha en el puerto 4000, con el código viejo en memoria
+(comprobado 14-oct-2026). Hay que terminar el proceso `node dist\index.js` (o
+reiniciar el PC) y abrir CashBuddy.exe. Si el cambio no se aplica, casi siempre
+es porque faltó este paso.
 
 Si cambias `prisma/schema.prisma`, corre `npx prisma migrate dev --name X`
 **y luego** `npx prisma generate`. El watchdog de `CashBuddy.exe` reinicia el
@@ -285,6 +289,17 @@ reintentar, y vuelve a abrirlo al terminar.
 - `EditRequest`: solo los tipos de la lista `deletable` se pueden borrar; un caso desconocido
   lanza error y nunca queda "Aprobada" sin efecto. El borrado de `MonthlyClose` no existe.
 - Siigo está fuera del alcance de este repositorio.
+
+### Auditoría final de Claude (14-oct-2026, ver `CLAUDE_AUDITORIA_Y_CORRECCION_FINAL.md`)
+
+- Sondeo de Shipday: un pedido que cae en un período cerrado (409 de `assertOpenPeriod`)
+  se **omite y se reporta** en `syncMessage` (`persistOrSkipClosed`); nunca debe abortar el
+  ciclo, porque entonces ningún pedido abierto posterior de la ventana se cargaba. Si agregas
+  otra ruta de carga masiva, usa el mismo patrón.
+- Errores 401/403 de Shipday se devuelven como 400 (`HttpError`), nunca como 401/403 propios:
+  el frontend cierra sesión ante 401.
+- Shipday limita ~5 peticiones/min **por cuenta**. Una segunda instalación (DEMO, otra PC)
+  con la misma API key compite con producción: mantener esas sucursales desactivadas.
 
 - Las migraciones de Prisma (`apps/api/prisma/migrations/**/*.sql`) SÍ deben
   versionarse. El `.gitignore` tiene una regla `*.sql` para respaldos de
