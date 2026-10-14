@@ -39,7 +39,8 @@ export function BankTransactionWizard({ open, onOpenChange, onDone, defaultType 
   async function submit() {
     setSaving(true);
     try {
-      await api.createBankTransaction({ type, amount, description, reference: reference || undefined, date: new Date(txDate + "T12:00:00").toISOString() });
+      // Medio explícito (el backend ya no asume banco) y fecha anclada a Bogotá (-05:00).
+      await api.createBankTransaction({ type, medium: "bank", amount, description, reference: reference || undefined, date: new Date(txDate + "T12:00:00-05:00").toISOString() });
       const label = type === "ingreso" ? "Ingreso bancario" : "Salida bancaria";
       toast.success(`✅ ${label} registrado: ${description}`);
       onDone?.();

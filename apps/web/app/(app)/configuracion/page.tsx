@@ -22,9 +22,19 @@ export default function SettingsPage() {
   const [pct, setPct] = useState(state.settings.commissionPercent ?? 0);
   const [confirm, setConfirm] = useState(0);
 
+  const [savingSettings, setSavingSettings] = useState(false);
   async function save() {
-    await updateSettings({ companyName: name, brandName, logoData, initialCash: cash, initialBank: bank, commissionPercent: pct });
-    toast.success("✅ Configuración guardada");
+    if (!isAdmin || savingSettings) return;
+    setSavingSettings(true);
+    try {
+      await updateSettings({ companyName: name, brandName, logoData, initialCash: cash, initialBank: bank, commissionPercent: pct });
+      // Solo tras la confirmación del servidor.
+      toast.success("✅ Configuración guardada");
+    } catch (e) {
+      toast.error((e as Error)?.message || "No se pudo guardar la configuración");
+    } finally {
+      setSavingSettings(false);
+    }
   }
 
   function onLogoFile(file: File) {
@@ -39,6 +49,13 @@ export default function SettingsPage() {
   return (
     <div className="space-y-5 max-w-2xl">
       <h1 className="text-2xl font-bold">⚙️ Configuración</h1>
+      {!isAdmin && (
+        <div className="rounded-2xl border p-4 text-sm text-muted-foreground">
+          🔒 Solo lectura: únicamente un administrador puede cambiar la configuración.
+        </div>
+      )}
+      {/* Para usuarios sin permisos el formulario queda deshabilitado (solo lectura). */}
+      <fieldset disabled={!isAdmin || savingSettings} className="space-y-5 disabled:opacity-80">
 
       {/* Marca del sistema */}
       <div className="glass-strong rounded-3xl p-6 space-y-4">
@@ -115,6 +132,8 @@ export default function SettingsPage() {
         <button onClick={save} className="w-full bg-primary text-primary-foreground font-bold py-3 rounded-xl shadow-cash">Guardar porcentaje</button>
       </div>
 
+      </fieldset>
+
       {/* Gestión de usuarios — solo admin */}
       {isAdmin && <UserManagement />}
 
@@ -137,7 +156,7 @@ export default function SettingsPage() {
             </button>
           )}
           {confirm === 2 && (
-            <button onClick={() => { void resetAll(); toast.success("Todo borrado. Te llevará al asistente."); setConfirm(0); }} className="bg-danger text-destructive-foreground font-bold px-4 py-2.5 rounded-xl animate-pulse-warn">
+            <button onClick={async () => { try { await resetAll(); toast.success("Todo borrado. Te llevará al asistente."); } catch (e) { toast.error((e as Error)?.message || "No se pudo borrar"); } finally { setConfirm(0); } }} className="bg-danger text-destructive-foreground font-bold px-4 py-2.5 rounded-xl animate-pulse-warn">
               💥 SÍ, borrar todo definitivamente
             </button>
           )}

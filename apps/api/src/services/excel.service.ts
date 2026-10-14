@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import { prisma } from "../lib/prisma";
 import { getMonthlyReport } from "./close.service";
+import { isBankLinkedBaseNote } from "../lib/balance-markers";
 import { bogotaMonthRange as monthRange } from "../lib/date-range";
 
 function cop(n: number) {
@@ -20,8 +21,8 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
     prisma.movement.aggregate({ where: { category: 4, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
     prisma.movement.aggregate({ where: { category: 15, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
     prisma.movement.aggregate({ where: { category: { in: [16, 18] }, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
-    prisma.baseTransaction.aggregate({ where: { type: "entrega", date: range, ...(branchId ? { branchId } : {}) }, _sum: { cashAmount: true, bankAmount: true, amount: true } }),
-    prisma.baseTransaction.aggregate({ where: { type: "pago", date: range, ...(branchId ? { branchId } : {}) }, _sum: { cashAmount: true, bankAmount: true, amount: true } }),
+    prisma.baseTransaction.findMany({ where: { type: "entrega", date: range, ...(branchId ? { branchId } : {}) }, select: { cashAmount: true, bankAmount: true, amount: true, notes: true } }),
+    prisma.baseTransaction.findMany({ where: { type: "pago", date: range, ...(branchId ? { branchId } : {}) }, select: { cashAmount: true, bankAmount: true, amount: true, notes: true } }),
     // Por medio: un BankTransaction puede ser en efectivo o por transferencia. Antes se sumaban
     // todos en la columna BANCO como "Transferencias", inflando el banco con efectivo.
     prisma.bankTransaction.groupBy({ by: ["medium"], where: { type: "ingreso", date: range }, _sum: { amount: true } }),
@@ -55,18 +56,23 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
   ws.getCell("A2").value = "CONCEPTO"; ws.getCell("B2").value = "EFECTIVO"; ws.getCell("C2").value = "BANCO";
   ["A2", "B2", "C2"].forEach(c => Object.assign(ws.getCell(c), titleFill("FF455A64")));
 
-  const givenCash = baseGiven._sum.cashAmount ?? 0;
-  const givenBank = baseGiven._sum.bankAmount ?? 0;
-  const givenTotal = baseGiven._sum.amount ?? 0;
-  const paidCash = basePaid._sum.cashAmount ?? 0;
-  const paidBank = basePaid._sum.bankAmount ?? 0;
-  const paidTotal = basePaid._sum.amount ?? 0;
+  // Reparto POR FILA, respetando el cero explícito: antes `cash || total` convertía una base
+  // 100% bancaria (cash = 0) en efectivo = total y la mostraba duplicada en ambas columnas.
+  // Solo un registro antiguo SIN desglose (cash = bank = 0) se atribuye a efectivo, igual que
+  // en la caja esperada. Las devoluciones internas de un cobro bancario se excluyen: ese
+  // dinero ya está en "Movimientos Ingreso" (misma regla que getExpectedBalances).
+  const split = (rows: { cashAmount: number; bankAmount: number; amount: number }[]) => rows.reduce((acc, r) => {
+    const legacy = r.cashAmount === 0 && r.bankAmount === 0;
+    return { cash: acc.cash + (legacy ? r.amount : r.cashAmount), bank: acc.bank + (legacy ? 0 : r.bankAmount) };
+  }, { cash: 0, bank: 0 });
+  const given = split(baseGiven);
+  const paid = split(basePaid.filter(b => !isBankLinkedBaseNote(b.notes)));
 
   const leftRows: [string, number | string, number | string][] = [
     ["1-Domicilios (comisión)", report.totalSales, ""],
     ["3-Gastos Efectivo / 4-Banco", gEf._sum.amount ?? 0, gBk._sum.amount ?? 0],
-    ["5-Bases Entregadas", givenCash || givenTotal, givenBank],
-    ["6-Bases Devueltas", paidCash || paidTotal, paidBank],
+    ["5-Bases Entregadas", given.cash, given.bank],
+    ["6-Bases Devueltas", paid.cash, paid.bank],
     ["Movimientos Ingreso (efectivo / transferencia)", byMedium(bankIn, "cash"), byMedium(bankIn, "bank")],
     ["Movimientos Salida (efectivo / transferencia)", byMedium(bankOut, "cash"), byMedium(bankOut, "bank")],
     ["15-Nómina Efectivo / 16-Banco", nEf._sum.amount ?? 0, nBk._sum.amount ?? 0],

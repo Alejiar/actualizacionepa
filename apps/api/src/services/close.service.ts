@@ -134,8 +134,21 @@ export async function getMonthlyReport(month: string, branchId?: string) {
   const nominaBk = nominaBkAgg._sum.amount ?? 0;
   const basesGiven = basesGivenAgg._sum.amount ?? 0;
   const basesPaid = basesPaidAgg._sum.amount ?? 0;
-  const bankIng = bankIngAgg._sum.amount ?? 0;
-  const bankEgr = bankEgrAgg._sum.amount ?? 0;
+  // Pares "conciliados" que NO cuadran (registrados antes de validar contrapartes): un
+  // pairId no prueba que los importes cuadren. Se reincorporan al indicador pendiente.
+  const pairedRows = await prisma.bankTransaction.findMany({
+    where: { date: range, driverId: null, noCounterpart: false, pairId: { not: null } },
+    select: { id: true, type: true, amount: true, description: true, pairId: true },
+  });
+  const pairNet = new Map<string, { ing: number; egr: number }>();
+  for (const r of pairedRows) {
+    const g = pairNet.get(r.pairId!) ?? { ing: 0, egr: 0 };
+    if (r.type === "ingreso") g.ing += r.amount; else g.egr += r.amount;
+    pairNet.set(r.pairId!, g);
+  }
+  const brokenPairRows = pairedRows.filter(r => { const g = pairNet.get(r.pairId!)!; return g.ing !== g.egr || g.ing === 0 || g.egr === 0; });
+  const bankIng = (bankIngAgg._sum.amount ?? 0) + brokenPairRows.filter(r => r.type === "ingreso").reduce((t, r) => t + r.amount, 0);
+  const bankEgr = (bankEgrAgg._sum.amount ?? 0) + brokenPairRows.filter(r => r.type === "egreso").reduce((t, r) => t + r.amount, 0);
   const debtsGen = debtsGenAgg._sum.amount ?? 0;
   const debtsPaid = debtsPaidAgg._sum.paidAmount ?? 0;
 
@@ -145,6 +158,7 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     select: { id: true, type: true, amount: true, description: true },
     orderBy: { date: "desc" }, take: 20,
   });
+  for (const r of brokenPairRows) pendingTransferMovs.push({ id: r.id, type: r.type, amount: r.amount, description: `${r.description} (par que no cuadra)` });
   const transferPendingItems = pendingTransferMovs.map(m => ({
     id: m.id,
     name: `${m.type === "ingreso" ? "📥" : "📤"} ${m.description || (m.type === "ingreso" ? "Ingreso" : "Salida")}`,
@@ -319,6 +333,7 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
   }
 
   const snapshot = {
+    capitalAnterior: null as null | { cash: number; bank: number },
     drivers: Object.fromEntries(driverMap),
     orders: orders.map(o => ({
       id: o.id,
@@ -337,6 +352,15 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
   // El capital inicial definido para el mes SIGUIENTE pasa a ser el saldo base del
   // sistema: actualiza el efectivo y banco de arranque (Settings). Así el nuevo mes
   // comienza acumulando desde esos valores.
+  // Capital vigente ANTES de este cierre: se guarda en el snapshot para que las consultas de
+  // fechas anteriores reconstruyan su ancla (Settings se sobrescribe a continuación).
+  const settingsBefore = await prisma.settings.findUnique({ where: { id: "singleton" } });
+  const capitalAnterior = { cash: settingsBefore?.initialCash ?? 0, bank: settingsBefore?.initialBank ?? 0 };
+  // Capital del período siguiente: el indicado, o el vigente si no se indicó. Se persiste
+  // SIEMPRE en el cierre; si quedaba nulo, el ancla dependía de Settings y un cierre
+  // posterior cambiaba retroactivamente los saldos de este período.
+  const newCash = initialCash ?? capitalAnterior.cash;
+  const newBank = initialBank ?? capitalAnterior.bank;
   if (initialCash != null || initialBank != null) {
     await prisma.settings.update({
       where: { id: "singleton" },
@@ -362,9 +386,9 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
       basesPaid,
       basesPending: basesPendingReconciled,
       conversions: conversionsSummary,
-      snapshot,
-      ...(initialCash != null ? { initialCash } : {}),
-      ...(initialBank != null ? { initialBank } : {}),
+      snapshot: { ...snapshot, capitalAnterior },
+      initialCash: newCash,
+      initialBank: newBank,
       totalSales: report.totalSales,
       totalExpenses: report.expenses.total,
       totalPayroll: report.payroll.total,

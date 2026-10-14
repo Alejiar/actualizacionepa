@@ -43,7 +43,8 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
   ] = await Promise.all([
     // Sistema original (movimientos de caja)
     prisma.movement.findMany({
-      where: dateWhere ? { createdAt: dateWhere } : undefined,
+      // Por FECHA OPERATIVA (la que se muestra y la que usa la caja), no por registro.
+      where: (params?.from || params?.to) ? { date: { ...(params?.from ? { gte: params.from } : {}), ...(params?.to ? { lte: params.to } : {}) } } : undefined,
       include: { worker: { select: { name: true } } },
       orderBy: { createdAt: "desc" },
       take: params?.limit ?? 500,

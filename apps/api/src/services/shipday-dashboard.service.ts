@@ -1,8 +1,9 @@
 import { prisma } from "../lib/prisma";
 import * as bankSvc from "./bank-transaction.service";
 import * as shiftSvc from "./shift-close.service";
-import { bogotaDayRange as dateRange, bogotaMonthRange as monthRange, todayBogota } from "../lib/date-range";
+import { bogotaDayRange as dateRange, bogotaMonthRange as monthRange, todayBogota, toBogotaDateStr } from "../lib/date-range";
 import { isBankLinkedPaymentNote, isBankLinkedBaseNote } from "../lib/balance-markers";
+import { movementEffectiveAt } from "../lib/period-guard";
 
 export async function getDashboardFull(branchId?: string, date?: string) {
   const day = date ?? todayBogota();
@@ -53,31 +54,44 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
   // flujos registrados DESPUÉS del mes cerrado. Si no hay cierres, arranca con el
   // capital configurado (Settings) desde el inicio del mes calendario.
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
-  const lastClose = await prisma.monthlyClose.findFirst({
+  // ANCLA HISTÓRICA: solo cierres registrados hasta el final del día consultado. Antes se
+  // tomaba SIEMPRE el último cierre, y consultar un día anterior a él devolvía el capital
+  // nuevo (un cierre posterior reescribía el pasado).
+  const closes = await prisma.monthlyClose.findMany({
     where: { branchId: null },
-    orderBy: { month: "desc" },
+    orderBy: { closedAt: "asc" },
+    select: { closedAt: true, initialCash: true, initialBank: true, snapshot: true },
   });
+  const anchor = [...closes].reverse().find(c => c.closedAt.getTime() <= todayRange.lte.getTime());
 
-  // periodStart = MOMENTO del último cierre (no el mes siguiente). Así, apenas cierras,
-  // el saldo arranca con el capital del cierre, y CADA movimiento que registras después
-  // (aunque sea el mismo día/mes) se suma de inmediato. Sin cierres: inicio del mes actual.
+  // periodStart = MOMENTO del cierre ancla. Sin ancla (fecha anterior a todo cierre, o sin
+  // cierres): capital vigente ANTES del primer cierre, desde el inicio del mes consultado.
   let baseCash: number;
   let baseBank: number;
   let periodStart: Date;
-  if (lastClose) {
-    baseCash = lastClose.initialCash ?? settings?.initialCash ?? 0;
-    baseBank = lastClose.initialBank ?? settings?.initialBank ?? 0;
-    periodStart = lastClose.closedAt;
+  if (anchor) {
+    baseCash = anchor.initialCash ?? settings?.initialCash ?? 0;
+    baseBank = anchor.initialBank ?? settings?.initialBank ?? 0;
+    periodStart = anchor.closedAt;
   } else {
-    baseCash = settings?.initialCash ?? 0;
-    baseBank = settings?.initialBank ?? 0;
+    // El primer cierre posterior guarda en su snapshot el capital que reemplazó
+    // (`capitalAnterior`). Los cierres antiguos no lo tienen: entonces solo queda
+    // Settings (puede ya reflejar un capital posterior; ver CLAUDE_CORRECCION_12_DEFECTOS.md).
+    const prev = (closes[0]?.snapshot as { capitalAnterior?: { cash: number; bank: number } } | null)?.capitalAnterior;
+    baseCash = prev?.cash ?? settings?.initialCash ?? 0;
+    baseBank = prev?.bank ?? settings?.initialBank ?? 0;
     periodStart = monthRange(today.slice(0, 7)).gte;
   }
   const cumRange = { gte: periodStart, lte: todayRange.lte };
 
-  const [movements, bankTxs, convs, driverPayments, bases, clientPays, clientDebtsOut] = await Promise.all([
-    // Caja: se cuentan los movimientos REGISTRADOS después del cierre (por createdAt).
-    prisma.movement.findMany({ where: { createdAt: cumRange, status: "confirmed" }, select: { type: true, medium: true, amount: true } }),
+  const [movementRows, bankTxs, convs, driverPayments, bases, clientPays, clientDebtsOut] = await Promise.all([
+    // Caja: por FECHA OPERATIVA (movementEffectiveAt), la misma que usan el Historial y
+    // los reportes. Antes se filtraba por createdAt y un movimiento retroactivo afectaba
+    // el saldo de otro día.
+    prisma.movement.findMany({
+      where: { status: "confirmed", date: { gte: toBogotaDateStr(periodStart), lte: today } },
+      select: { type: true, medium: true, amount: true, date: true, createdAt: true },
+    }),
     prisma.bankTransaction.findMany({ where: { date: cumRange }, select: { type: true, medium: true, amount: true } }),
     prisma.conversion.findMany({ where: { date: cumRange }, select: { type: true, amount: true } }),
     prisma.driverPayment.findMany({ where: { date: cumRange }, select: { medium: true, amount: true, notes: true } }),
@@ -88,6 +102,10 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     // al cobrar ya lo cubre `clientPays` (paidCash/paidBank).
     prisma.clientDebt.findMany({ where: { createdAt: cumRange, medium: { not: null } }, select: { amount: true, medium: true } }),
   ]);
+  const movements = movementRows.filter(m => {
+    const t = movementEffectiveAt(m).getTime();
+    return t > periodStart.getTime() && t <= todayRange.lte.getTime();
+  });
 
   // Gastos/nómina del sistema original (solo confirmados)
   for (const m of movements) {

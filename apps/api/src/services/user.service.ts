@@ -31,6 +31,10 @@ export async function updateUser(id: string, data: { name?: string; role?: "admi
     if (data.password.length < 6) throw badRequest("La contraseña debe tener al menos 6 caracteres");
     update.passwordHash = await bcrypt.hash(data.password, 10);
   }
+  // Cambios de seguridad revocan TODAS las sesiones previas del usuario.
+  if (data.password || (data.role && data.role !== user.role) || (data.active !== undefined && data.active !== user.active)) {
+    update.tokenVersion = { increment: 1 };
+  }
   return prisma.user.update({
     where: { id },
     data: update,

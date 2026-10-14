@@ -21,6 +21,7 @@ function mapKnownError(err: unknown): HttpError | null {
   if (code === "P2002") return new HttpError(409, "Ya existe un registro con esos datos.");
   if (code === "P2000" || code === "P2006" || code === "P2007" || code === "P2009" || code === "P2012" || code === "P2033") return new HttpError(400, "Datos inválidos.");
   if (err instanceof Error && err.name === "PrismaClientValidationError") return new HttpError(400, "Datos inválidos.");
+  if (err instanceof Error && err.name === "EncryptionKeyError") return new HttpError(503, "La clave de cifrado del servidor no está disponible. Contacta al administrador.");
   return null;
 }
 

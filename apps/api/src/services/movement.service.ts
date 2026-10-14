@@ -3,6 +3,7 @@ import type { CreateMovementRequest, Movement, UpdateMovementRequest } from "@ca
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { notFound, badRequest, forbidden } from "../lib/errors";
 import { ensureDay } from "./day.service";
+import { assertOpenPeriod, movementEffectiveAt } from "../lib/period-guard";
 import { toMovement } from "./mappers";
 
 function nowTime(): string {
@@ -20,6 +21,11 @@ export async function addMovement(input: CreateMovementRequest): Promise<Movemen
   return moneyTransaction(async () => {
   assertMoney(input.amount);
   validateExpense(input);
+  // Solo movimientos CONFIRMADOS afectan la caja; esos deben caer en un período abierto.
+  // Un pendiente se valida al aprobarse (approveMovement).
+  if ((input.status ?? "confirmed") === "confirmed") {
+    await assertOpenPeriod(input.date, movementEffectiveAt({ date: input.date, createdAt: new Date() }));
+  }
   await ensureDay(input.date);
   const row = await prisma.movement.create({
     data: {
@@ -69,6 +75,15 @@ export async function updateMovement(
     if (exists.status === "confirmed") throw badRequest("Un gasto confirmado se corrige mediante una solicitud aprobada por un administrador.");
   }
   validateExpense({...exists,...patch});
+  // Cambios con efecto en caja deben ocurrir en períodos abiertos (origen y destino).
+  const merged = { ...exists, ...patch } as typeof exists;
+  const touchesMoney = ["amount", "date", "type", "medium", "status"].some(k => (patch as Record<string, unknown>)[k] !== undefined
+    && (patch as Record<string, unknown>)[k] !== (exists as Record<string, unknown>)[k]);
+  if (touchesMoney) {
+    if (exists.status === "confirmed") await assertOpenPeriod(exists.date, movementEffectiveAt(exists));
+    if (merged.status === "confirmed") await assertOpenPeriod(merged.date, movementEffectiveAt({ date: merged.date, createdAt: exists.createdAt }));
+  }
+  if (patch.date !== undefined && patch.date !== exists.date) await ensureDay(patch.date);
   const row = await prisma.movement.update({ where: { id }, data: patch });
   return toMovement(row);
   });
@@ -107,6 +122,9 @@ export async function approveMovement(id: string, approverId: string, approverNa
   if (!m) throw notFound("Movimiento no encontrado");
   if (m.status !== "pending") throw badRequest("Este gasto ya fue procesado");
   assertMoney(m.amount);
+  // Confirmarlo ahora lo suma a la caja de SU fecha: si ese día/mes ya cerró, cambiaría
+  // cifras cerradas (D7). Se rechaza: el admin puede rechazarlo y registrarlo en el día abierto.
+  await assertOpenPeriod(m.date, movementEffectiveAt(m), "El gasto");
   return prisma.movement.update({
     where: { id },
     data: { status: "confirmed", approvedBy: approverId, approvedByName: approverName ?? null, approvedAt: new Date() },

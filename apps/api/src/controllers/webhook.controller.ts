@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { toBogotaDateStr } from "../lib/date-range";
 import { applyDebtDelta } from "../services/driver.service";
+import { MAX_MONEY } from "../lib/money-validation";
 
 // Eventos/estados que significan "entregado de verdad".
 const DELIVERED_EVENTS = new Set(["ORDER_COMPLETED", "ORDER_DELIVERED"]);
@@ -26,9 +27,24 @@ function safeEqual(a: string, b: string): boolean {
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 }
-function num(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+/** Tarifa de Shipday: ausente = 0 (stub provisional legítimo); número finito, no negativo y
+ * dentro del rango de INTEGER. Cualquier otra cosa es inválida (null): una tarifa negativa
+ * generaba ventas y comisión negativas sin efecto equivalente en la deuda. */
+export function parseShipdayFee(raw: unknown): number | null {
+  if (raw == null || raw === "") return 0;
+  const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || n < 0) return null;
+  const v = Math.round(n);
+  return v <= MAX_MONEY ? v : null;
+}
+function isDeliveredEvent(item: unknown): boolean {
+  const root = asObj(item); const order = asObj(root.order ?? root);
+  const status = String(root.order_status ?? asObj(order.orderStatus).orderState ?? order.status ?? "");
+  return DELIVERED_EVENTS.has(String(root.event ?? "")) || DELIVERED_STATES.has(status);
+}
+function rawFee(item: unknown): unknown {
+  const root = asObj(item); const order = asObj(root.order ?? root); const costing = asObj(order.costing);
+  return order.delivery_fee ?? root.delivery_fee ?? costing.deliveryFee ?? costing.totalCost ?? order.deliveryFee ?? order.orderTotal;
 }
 function str(v: unknown): string | null {
   if (v == null) return null;
@@ -91,6 +107,10 @@ export async function shipdayWebhook(req: Request, res: Response) {
   const body = req.body;
   const items: unknown[] = Array.isArray(body) ? body : [body];
   if (items.length > 100) return res.status(400).json({error:"Máximo 100 eventos por petición."});
+  // Validación de TODO el lote antes de escribir: no se confirma un lote con elementos
+  // financieros inválidos (se rechaza completo y no se procesa ninguno).
+  const invalid = items.map((it, i) => ({ i, it })).filter(x => isDeliveredEvent(x.it) && parseShipdayFee(rawFee(x.it)) === null);
+  if (invalid.length) return res.status(400).json({ error: "Tarifa inválida en el evento (debe ser un número no negativo).", eventos: invalid.map(x => x.i) });
 
   const result = await moneyTransaction(async () => {
   // La sucursal pudo desactivarse mientras esta petición esperaba su turno.
@@ -142,10 +162,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
     if (tombstoned) { ignored++; continue; }
 
     // Valor del domicilio: webhook `delivery_fee`; compat `costing.deliveryFee`/etc.
-    const costing = asObj(order.costing);
-    const deliveryValue = Math.round(num(
-      order.delivery_fee ?? root.delivery_fee ?? costing.deliveryFee ?? costing.totalCost ?? order.deliveryFee ?? order.orderTotal,
-    ));
+    const deliveryValue = parseShipdayFee(rawFee(item))!; // ya validado arriba
     const companyAmount = Math.round(deliveryValue * (commissionPercent / 100));
 
     // Fecha de ENTREGA (la que importa): webhook `delivery_time` (ms); compat ISO.

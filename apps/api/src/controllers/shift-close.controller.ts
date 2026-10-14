@@ -3,6 +3,7 @@ import * as svc from "../services/shift-close.service";
 import { getExpectedBalancesForDate } from "../services/shipday-dashboard.service";
 import { getActor } from "../lib/actor";
 import { badRequest } from "../lib/errors";
+import { moneyTransaction } from "../lib/prisma";
 
 export async function getForDate(req: Request, res: Response) {
   res.json(await svc.getShiftsForDate(req.params.date));
@@ -33,26 +34,30 @@ export async function register(req: Request, res: Response) {
   // ignorando los movimientos de efectivo de la tarde y mostrando un descuadre
   // falso igual a esos movimientos (p. ej. −$179.000 por bases entregadas después
   // del cierre AM, aunque la caja estuviera perfecta).
-  const expected = await getExpectedBalancesForDate(date);
-  const expectedAmount = expected.cash;
-
-  // El saldo esperado de BANCO también lo decide el servidor. El cliente manda
-  // bankCounted (el saldo real leído del banco). Es OBLIGATORIO en todo cierre:
-  // puede ser 0, pero no puede quedar vacío.
+  // El banco contado es OBLIGATORIO en todo cierre: puede ser 0, pero no vacío. Se valida
+  // antes de entrar a la caja (no requiere leer saldos).
   const rawBank = req.body.bankCounted;
   if (rawBank == null || rawBank === "" || Number.isNaN(Number(rawBank))) {
     throw badRequest("Debe ingresar el valor del banco para continuar con el cierre.");
   }
   const bankCounted = Number(rawBank);
 
-  res.status(201).json(await svc.registerShift({
-    ...req.body,
-    expectedAmount,
-    bankCounted,
-    bankExpected: expected.bank,
-    createdBy: actor.id,
-    createdByName: actor.name,
-  }));
+  // Esperado + registro en UNA operación serializada (F04): se toma el candado financiero,
+  // se calcula el esperado con la vista ya consistente y se guarda el cierre en la misma
+  // transacción. Antes el esperado se leía FUERA del candado y un movimiento que entraba
+  // mientras el cierre esperaba quedaba fuera del esperado guardado (diferencia falsa).
+  const shift = await moneyTransaction(async () => {
+    const expected = await getExpectedBalancesForDate(date);
+    return svc.registerShift({
+      ...req.body,
+      expectedAmount: expected.cash,
+      bankCounted,
+      bankExpected: expected.bank,
+      createdBy: actor.id,
+      createdByName: actor.name,
+    });
+  });
+  res.status(201).json(shift);
 }
 
 export async function list(req: Request, res: Response) {

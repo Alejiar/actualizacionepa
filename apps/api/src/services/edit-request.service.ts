@@ -7,6 +7,7 @@ import { notFound, badRequest } from "../lib/errors";
 import { toBogotaDateStr } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import { applyDebtDelta } from "./driver.service";
+import { assertOpenPeriod, movementEffectiveAt } from "../lib/period-guard";
 import { deleteShift as deleteHourlyShift, editShift as editHourlyShift, deleteHourlyBankTx } from "./hourly-client.service";
 
 type ChangeMap = Record<string, { old: string; new: string }>;
@@ -22,9 +23,16 @@ const editable: Record<string, string[]> = {
   HourlyShift: ["driverId","driverName","startTime","endTime","date"],
 };
 const numericFields = new Set(["amount","deliveryValue","cashAmount","bankAmount","totalExpected","totalCounted","bankExpected","bankCounted","initialCash","initialBank"]);
+// Tipos cuya ELIMINACIÓN está implementada (con reversión íntegra de sus efectos). Cualquier
+// otro (p. ej. MonthlyClose) se rechaza al crear o revisar la solicitud: antes la solicitud
+// quedaba "Aprobada" sin que nada ocurriera.
+const deletable = new Set(["ShipdayOrder","Movement","BankTransaction","DriverPayment","BaseTransaction","ClientDebt","ClientDebtPayment","Conversion","ShiftClose","HourlyShift"]);
 function validateChanges(entity: string, changes: ChangeMap, deleting = false) {
   if (!editable[entity]) throw badRequest("Tipo de registro no permitido");
-  if (deleting) return;
+  if (deleting) {
+    if (!deletable.has(entity)) throw badRequest(`La eliminación de ${entity} no está implementada.`);
+    return;
+  }
   for (const [field, change] of Object.entries(changes)) {
     if (!editable[entity].includes(field)) throw badRequest("Campo no editable: " + field);
     if (typeof change.new !== "string") throw badRequest("Valor inválido");
@@ -123,6 +131,14 @@ export async function reviewRequest(id: string, reviewerId: string, action: "app
 
 // ── Eliminar entidad revirtiendo sus efectos en deudas/saldos ─────────────────
 async function deleteEntity(entityType: string, entityId: string, deletedBy?: string) {
+  validateChanges(entityType, {}, true);
+  // El registro debe existir: aprobar la eliminación de algo que ya no existe no aplica
+  // ningún efecto y no puede quedar como "Aprobada" (la solicitud sigue pendiente y el admin
+  // puede rechazarla).
+  const delegate = (prisma as unknown as Record<string, { findUnique: (a: unknown) => Promise<unknown> }>)[entityType[0].toLowerCase() + entityType.slice(1)];
+  if (!(await delegate.findUnique({ where: { id: entityId } }))) {
+    throw notFound("El registro ya no existe; rechaza esta solicitud.");
+  }
   switch (entityType) {
     case "ShipdayOrder": {
       const order = await prisma.shipdayOrder.findUnique({ where: { id: entityId } });
@@ -161,9 +177,13 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
       });
       break;
     }
-    case "Movement":
+    case "Movement": {
+      const m = await prisma.movement.findUniqueOrThrow({ where: { id: entityId } });
+      // Quitar un movimiento confirmado cambia la caja de SU día: debe estar abierto (D7).
+      if (m.status === "confirmed") await assertOpenPeriod(m.date, movementEffectiveAt(m));
       await prisma.movement.delete({ where: { id: entityId } });
       break;
+    }
     case "BankTransaction":
       await bankSvc.remove(entityId);
       break;
@@ -230,7 +250,7 @@ async function deleteEntity(entityType: string, entityId: string, deletedBy?: st
       await deleteHourlyShift(entityId);
       break;
     default:
-      console.warn(`[delete-request] entityType desconocido: ${entityType}`);
+      throw badRequest(`La eliminación de ${entityType} no está implementada.`);
   }
 }
 
@@ -276,7 +296,8 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
     case "ShiftClose": {
       // #2 — Edición de cierre de turno autorizada por el admin.
       const sc = await prisma.shiftClose.findUnique({ where: { id: entityId } });
-      if (sc) {
+      if (!sc) throw notFound("El registro ya no existe; rechaza esta solicitud.");
+      {
         const data: Record<string, unknown> = { ...newValues };
         // Recalcular diferencia si cambió el total esperado o contado.
         const totalExpected = (newValues.totalExpected as number) ?? sc.totalExpected;
@@ -300,10 +321,14 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
     case "ShipdayOrder":
       await applyShipdayOrderChange(entityId, newValues, reviewer);
       break;
-    case "Movement":
-      // El balance de caja se recalcula on-read desde los movimientos, así que solo actualizar
+    case "Movement": {
+      const m = await prisma.movement.findUnique({ where: { id: entityId } });
+      if (!m) throw notFound("El registro ya no existe; rechaza esta solicitud.");
+      // Corregir un movimiento confirmado cambia la caja de SU día: debe estar abierto (D7).
+      if (m.status === "confirmed") await assertOpenPeriod(m.date, movementEffectiveAt(m));
       await prisma.movement.update({ where: { id: entityId }, data: newValues });
       break;
+    }
     case "BankTransaction":
       // El balance de banco se recalcula on-read, solo actualizar
       await bankSvc.edit(entityId, newValues);
@@ -331,7 +356,7 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
       });
       break;
     default:
-      console.warn(`[edit-request] entityType desconocido: ${entityType}`);
+      throw badRequest(`La edición de ${entityType} no está implementada.`);
   }
 }
 

@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { MoneyInput } from "../MoneyInput";
@@ -13,7 +14,8 @@ export function WelcomeWizard() {
   const [newWorker, setNewWorker] = useState("");
 
   function finish() {
-    void updateSettings({ companyName: name, initialCash: cash, initialBank: bank, setupComplete: true });
+    updateSettings({ companyName: name, initialCash: cash, initialBank: bank, setupComplete: true })
+      .catch((e) => toast.error((e as Error)?.message || "No se pudo guardar la configuración"));
   }
 
   return (

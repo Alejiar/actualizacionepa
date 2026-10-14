@@ -99,28 +99,47 @@ export async function getHourlyClient(id: string) {
   return withBreakdown(client);
 }
 
-export async function createHourlyClient(data: { name: string; driverHourValue: number; companyHourValue: number }) {
-  const name = (data.name ?? "").trim();
-  if (!name) throw badRequest("El nombre del cliente es obligatorio");
-  const driverHourValue = Math.round(data.driverHourValue ?? 0);
-  const companyHourValue = Math.round(data.companyHourValue ?? 0);
-  if (driverHourValue < 0 || companyHourValue < 0) throw badRequest("Los valores por hora no pueden ser negativos");
+// Tarifas por hora: enteros en pesos, no negativos, dentro del rango monetario; la suma debe
+// ser > 0. Se RECHAZAN entradas inválidas (no se redondean ni se convierten a 0): una tarifa
+// negativa producía turnos y deudas de cliente negativas.
+function validateRates(driverHourValue: unknown, companyHourValue: unknown) {
+  assertMoney(driverHourValue, true);
+  assertMoney(companyHourValue, true);
   if (driverHourValue + companyHourValue <= 0) throw badRequest("Define al menos un valor por hora mayor a 0");
-  return prisma.hourlyClient.create({ data: { name, driverHourValue, companyHourValue } });
+  assertMoney(driverHourValue + companyHourValue);
+}
+function validateName(name: unknown): string {
+  if (typeof name !== "string" || !name.trim()) throw badRequest("El nombre del cliente es obligatorio");
+  return name.trim();
+}
+
+export async function createHourlyClient(data: { name: string; driverHourValue: number; companyHourValue: number }) {
+  const name = validateName(data.name);
+  validateRates(data.driverHourValue, data.companyHourValue);
+  return prisma.hourlyClient.create({ data: { name, driverHourValue: data.driverHourValue, companyHourValue: data.companyHourValue } });
 }
 
 export async function updateHourlyClient(
   id: string,
   data: Partial<{ name: string; driverHourValue: number; companyHourValue: number; active: boolean }>,
 ) {
-  return prisma.hourlyClient.update({
-    where: { id },
-    data: {
-      ...(typeof data.name === "string" ? { name: data.name.trim() } : {}),
-      ...(data.driverHourValue != null ? { driverHourValue: Math.round(data.driverHourValue) } : {}),
-      ...(data.companyHourValue != null ? { companyHourValue: Math.round(data.companyHourValue) } : {}),
-      ...(typeof data.active === "boolean" ? { active: data.active } : {}),
-    },
+  return moneyTransaction(async () => {
+    const current = await prisma.hourlyClient.findUnique({ where: { id } });
+    if (!current) throw notFound("Cliente no encontrado");
+    if (data.active !== undefined && typeof data.active !== "boolean") throw badRequest("Estado inválido");
+    const name = data.name !== undefined ? validateName(data.name) : undefined;
+    // Se valida el par RESULTANTE (la tarifa no enviada conserva su valor actual).
+    const driverHourValue = data.driverHourValue !== undefined ? data.driverHourValue : current.driverHourValue;
+    const companyHourValue = data.companyHourValue !== undefined ? data.companyHourValue : current.companyHourValue;
+    validateRates(driverHourValue, companyHourValue);
+    return prisma.hourlyClient.update({
+      where: { id },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        driverHourValue, companyHourValue,
+        ...(typeof data.active === "boolean" ? { active: data.active } : {}),
+      },
+    });
   });
 }
 
@@ -167,6 +186,8 @@ export async function registerShift(
   if (minutes <= 0) throw badRequest("La hora de salida debe ser posterior a la de entrada");
 
   const { driverAmount, companyAmount, totalAmount } = computeAmounts(client, minutes);
+  // Defensa ante tarifas históricas inválidas guardadas antes de esta validación.
+  assertMoney(driverAmount, true); assertMoney(companyAmount, true); assertMoney(totalAmount);
   const medium = input.medium === "bank" ? "bank" : "cash";
   const actorId = input.actor?.id ?? null;
   const actorName = input.actor?.name ?? null;
@@ -394,6 +415,7 @@ export async function editShift(
   if (minutes <= 0) throw badRequest("La hora de salida debe ser posterior a la de entrada");
 
   const { driverAmount, companyAmount, totalAmount } = computeAmounts(shift.hourlyClient, minutes);
+  assertMoney(driverAmount, true); assertMoney(companyAmount, true); assertMoney(totalAmount);
   const deltaTotal = totalAmount - shift.totalAmount;
 
   await prisma.$transaction(async (tx) => {

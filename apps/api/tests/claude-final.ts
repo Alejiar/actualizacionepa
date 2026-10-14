@@ -31,7 +31,7 @@ async function main() {
   const realFetch = globalThis.fetch;
   const server = createServer().listen(0, "127.0.0.1"); await new Promise<void>(r => server.once("listening", r));
   const origin = "http://127.0.0.1:" + (server.address() as any).port;
-  const tok = (x: any) => signToken({ sub: x.id, email: x.email, name: x.name, role: x.role });
+  const tok = (x: any) => signToken({ sub: x.id, email: x.email, name: x.name, role: x.role, tv: x.tokenVersion });
   async function api(route: string, method = "GET", body?: unknown, actor: any = admin, token?: string, raw?: string) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (actor) headers.Authorization = "Bearer " + (token ?? tok(actor));
@@ -64,10 +64,17 @@ async function main() {
     await check("Permisos: admin degradado y desactivado pierde privilegios de inmediato (token anterior)", async () => {
       const ex = await p.user.create({ data: { email: uid("ex") + "@x.invalid", name: "Ex", passwordHash: "x", role: "admin" } });
       const old = tok(ex); await new Promise(r => setTimeout(r, 1100));
-      await p.user.update({ where: { id: ex.id }, data: { role: "user" } });
+      // Degradación por el camino real (PATCH /users/:id, que incrementa tokenVersion). Un
+      // UPDATE directo a la BD no pasa por la aplicación: aun así el rol se lee de la BD en
+      // cada petición: el token anterior pierde el privilegio (403) aunque no se revoque.
+      const raw = await p.user.create({ data: { email: uid("raw") + "@x.invalid", name: "Raw", passwordHash: "x", role: "admin" } });
+      const rawTok = tok(raw); await p.user.update({ where: { id: raw.id }, data: { role: "user" } });
+      assert.equal((await api("/settings", "PATCH", { initialCash: 777 }, raw, rawTok)).status, 403);
+      assert.equal((await api(`/users/${ex.id}`, "PATCH", { role: "user" })).status, 200);
       const r1 = await api("/settings", "PATCH", { initialCash: 777 }, ex, old);
       assert.equal(r1.status, 401, JSON.stringify(r1));
-      const fresh = tok({ ...ex, role: "admin" }); // aunque el token diga "admin", manda la BD
+      const now = await p.user.findUniqueOrThrow({ where: { id: ex.id } });
+      const fresh = tok({ ...now, role: "admin" }); // sesión vigente que dice "admin": manda la BD
       assert.equal((await api("/settings", "PATCH", { initialCash: 777 }, ex, fresh)).status, 403);
       await p.user.update({ where: { id: ex.id }, data: { active: false } });
       assert.equal((await api("/sd/dashboard", "GET", undefined, ex, tok(ex))).status, 401);

@@ -7,6 +7,8 @@ export interface JwtPayload {
   email: string;
   name?: string;
   role: UserRole;
+  /** Versión de sesión del usuario al emitir el token (User.tokenVersion). */
+  tv?: number;
 }
 
 export function signToken(payload: JwtPayload): string {

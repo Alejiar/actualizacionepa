@@ -6,6 +6,7 @@ function debtMedium(value:unknown) { if(value != null && value !== "cash" && val
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
 import { todayBogota } from "../lib/date-range";
+import { assertOpenPeriod } from "../lib/period-guard";
 
 // Usuario + equipo (PC) que hace la acción. Compatible con getActor(req).
 type ActorLike = { id?: string | null; name?: string | null; deviceId?: string | null; deviceName?: string | null };
@@ -100,6 +101,8 @@ export async function addDebt(clientId: string, description: string, amount: num
       && new Date(date + "T12:00:00-05:00").toLocaleDateString("en-CA", { timeZone: "America/Bogota" }) === date;
     if (!ok) throw badRequest("Fecha inválida. Usa el formato AAAA-MM-DD.");
     if (date > todayBogota()) throw badRequest("La fecha de la deuda no puede ser futura.");
+    // Fecha anterior: no puede caer en un día/mes ya cerrado (D7 pendiente).
+    if (date < todayBogota()) await assertOpenPeriod(date, new Date(date + "T12:00:00-05:00"), "La deuda");
   }
   if (!(await prisma.client.findUnique({ where: { id: clientId }, select: { id: true } }))) throw notFound("Cliente no encontrado");
   const [debt] = await prisma.$transaction([

@@ -170,8 +170,19 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
     prisma.shipdayOrder.findMany({ where: { deliveredAt: range, status: DELIVERED_FILTER }, select: { companyAmount: true } }),
     prisma.shiftClose.findUnique({ where: { date_shift: { date, shift: "close" } } }),
   ]);
+  // Fuentes que ya mueven la caja esperada (getExpectedBalances) y faltaban en el desglose:
+  // conversiones efectivo↔banco y préstamos de clientes con desembolso (deuda con medio).
+  const [convs, loans] = await Promise.all([
+    prisma.conversion.findMany({ where: { date: range }, select: { type: true, amount: true } }),
+    prisma.clientDebt.findMany({ where: { createdAt: range, medium: { not: null } }, select: { amount: true, medium: true } }),
+  ]);
 
   let cashIn = 0, cashOut = 0, bankIn = 0, bankOut = 0;
+  for (const c of convs) {
+    if (c.type === "banco_a_efectivo") { bankOut += c.amount; cashIn += c.amount; }
+    else { cashOut += c.amount; bankIn += c.amount; }
+  }
+  for (const l of loans) { if (l.medium === "cash") cashOut += l.amount; else bankOut += l.amount; }
   let gastos = 0, nomina = 0;
 
   for (const m of movements) {
@@ -195,7 +206,8 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
   // Bases: entrega sale, devolución vuelve. Igual, se excluyen las bank-linked.
   for (const b of bases) {
     if (b.type === "pago" && isBankLinkedBaseNote(b.notes)) continue;
-    const cash = b.cashAmount || (b.bankAmount ? 0 : b.amount);
+    // Sin desglose (ambos 0, registro antiguo) = efectivo; un 0 explícito con banco > 0 se respeta.
+    const cash = b.cashAmount === 0 && b.bankAmount === 0 ? b.amount : b.cashAmount;
     const bank = b.bankAmount;
     if (b.type === "entrega") { cashOut += cash; bankOut += bank; }
     else { cashIn += cash; bankIn += bank; }
@@ -224,6 +236,8 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
     bases.length > 0 ||
     clientDebtsPaid.length > 0 ||
     orders.length > 0 ||
+    convs.length > 0 ||
+    loans.length > 0 ||
     (clientDebtsGenAgg._sum.amount ?? 0) > 0 ||
     !!closeShift;
 

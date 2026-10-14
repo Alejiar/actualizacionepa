@@ -239,13 +239,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [refreshWorkers],
   );
 
+  // Propaga el error: quien llama decide qué mostrar. Antes se capturaba aquí y la promesa
+  // se resolvía igual, así que la pantalla mostraba "guardado" aunque el servidor lo rechazara.
   const updateSettings: Ctx["updateSettings"] = useCallback(async (patch) => {
-    try {
-      const settings = await api<Settings>("/settings", { method: "PATCH", body: patch });
-      setState((s) => ({ ...s, settings }));
-    } catch (e) {
-      toast.error((e as Error)?.message ?? "Error al guardar configuración");
-    }
+    const settings = await api<Settings>("/settings", { method: "PATCH", body: patch });
+    setState((s) => ({ ...s, settings }));
   }, []);
 
   const setArqueo: Ctx["setArqueo"] = useCallback(
@@ -263,13 +261,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // También propaga el error (antes la pantalla anunciaba "Todo borrado" aunque fallara).
   const resetAll: Ctx["resetAll"] = useCallback(async () => {
-    try {
-      await api("/admin/reset", { method: "POST" });
-      await reloadAll();
-    } catch (e) {
-      toast.error((e as Error)?.message ?? "Error al reiniciar");
-    }
+    await api("/admin/reset", { method: "POST" });
+    await reloadAll();
   }, [reloadAll]);
 
   const value = useMemo<Ctx>(

@@ -1,7 +1,8 @@
 import { applyDebtDelta, applyBankToDriver } from "./driver.service";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { bogotaOpenRange } from "../lib/date-range";
-import { badRequest } from "../lib/errors";
+import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
+import { badRequest, conflict, notFound } from "../lib/errors";
+import { assertOpenPeriod, isOpenPeriod } from "../lib/period-guard";
 import { assertMoney } from "../lib/money-validation";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import * as hourlySvc from "./hourly-client.service";
@@ -38,51 +39,72 @@ export async function create(data: {
   noCounterpart?: boolean;
 }) {
   return moneyTransaction(async () => {
-  // Punto 4 — bloquear montos inválidos (0 o negativos) que falsean los saldos.
-  // Montos enteros en pesos: sin redondeos silenciosos, sin negativos ni desbordes.
+  // ── Contrato de entrada (F07): el medio NUNCA se asume por defecto. ─────────────────
   if (data.type !== "ingreso" && data.type !== "egreso") throw badRequest("Tipo inválido (ingreso o egreso).");
-  if (data.cashAmount != null) assertMoney(data.cashAmount, true);
-  if (data.bankAmount != null) assertMoney(data.bankAmount, true);
-  const cashIn0 = data.cashAmount ?? 0;
-  const bankIn0 = data.bankAmount ?? 0;
-  const totalIn = (cashIn0 + bankIn0) || data.amount;
-  assertMoney(totalIn);
+  if (data.medium != null && data.medium !== "cash" && data.medium !== "bank") throw badRequest("Medio inválido (cash o bank).");
+  const hasSplit = data.cashAmount != null || data.bankAmount != null;
+  let cash = 0, bank = 0;
+  if (hasSplit) {
+    if (data.cashAmount != null) assertMoney(data.cashAmount, true);
+    if (data.bankAmount != null) assertMoney(data.bankAmount, true);
+    cash = data.cashAmount ?? 0;
+    bank = data.bankAmount ?? 0;
+    assertMoney(cash + bank);
+    if (data.amount != null && data.amount !== cash + bank) {
+      throw badRequest("El total no coincide con la suma de efectivo y transferencia.");
+    }
+    // Split de una sola parte: el medio lo dicta el split; un `medium` contradictorio se rechaza.
+    if (cash > 0 && bank === 0 && data.medium === "bank") throw badRequest("Contradicción: el desglose es solo efectivo pero el medio indicado es banco.");
+    if (bank > 0 && cash === 0 && data.medium === "cash") throw badRequest("Contradicción: el desglose es solo transferencia pero el medio indicado es efectivo.");
+  } else {
+    assertMoney(data.amount);
+    if (data.medium !== "cash" && data.medium !== "bank") throw badRequest("Indica el medio (cash o bank) o el desglose efectivo/transferencia.");
+    if (data.medium === "cash") cash = data.amount; else bank = data.amount;
+  }
+  if (data.pairWith && data.noCounterpart === true) throw badRequest("Un movimiento no puede ser contraparte y a la vez 'sin contraparte'.");
 
   let driverName: string | undefined;
   if (data.driverId) {
     const driver = await prisma.driver.findUnique({ where: { id: data.driverId } });
-    driverName = driver?.name;
+    if (!driver) throw notFound("Domiciliario no encontrado");
+    driverName = driver.name;
   }
-  // Fecha del movimiento. Defensa: NINGÚN movimiento puede quedar fechado en el
-  // futuro (eso lo sacaría del "esperado de hoy" y el dinero parecería no existir).
-  // Si por una zona horaria mal calculada en el cliente llega una fecha futura, se
-  // ajusta a "ahora". El back-dating al pasado sí se respeta (corrección manual).
+  // Fecha del movimiento. Ningún movimiento puede quedar fechado en el futuro (se ajusta a
+  // "ahora"). Una fecha explícita de un día anterior debe caer en un período abierto: un día
+  // o mes ya cerrado no se modifica en silencio (decisión D7 pendiente).
   const now = new Date();
   let when = data.date ? new Date(data.date) : now;
   if (Number.isNaN(when.getTime()) || when.getTime() > now.getTime()) when = now;
+  if (when !== now && toBogotaDateStr(when) < toBogotaDateStr(now)) {
+    await assertOpenPeriod(toBogotaDateStr(when), when);
+  }
 
-  // Enlace explícito de contraparte: comparten un pairId. Así, salida ↔ retorno se
-  // cuadran sin depender de coincidencias de monto.
-  //
-  // FECHA DE LA CONTRAPARTE: se fija SIEMPRE en el día del movimiento ORIGINAL, no en
-  // "hoy". Un par entrada↔salida es plata de paso que neta a cero; si la contraparte
-  // cae en otro día que el original, en la vista de un solo día nunca se ven juntos y
-  // AMBOS quedan pintados como "esperando contraparte" para siempre (bug reportado: dos
-  // movimientos —75.000 y 100.000— cuadrados pero en días distintos). Heredar la fecha
-  // del original hace que el par cuadre en su día. Es neutro para el saldo del período
-  // (neto cero y el ancla del saldo esperado es el cierre mensual, no el día).
+  // ── Contraparte (F01): un pairId solo se asigna a un par que REALMENTE cuadra. ────────
+  // Original existente, sin pareja previa, de signo opuesto, mismo importe total (suma del
+  // grupo si es mixto), sin efecto sobre deudas ni turnos y no marcado "sin contraparte".
+  // Las contrapartes parciales no están definidas por el negocio: se rechazan.
   let pairId: string | undefined;
   if (data.pairWith) {
     const original = await prisma.bankTransaction.findUnique({ where: { id: data.pairWith } });
-    if (original) {
-      when = original.date; // ← la contraparte se fecha en el día del original
-      pairId = original.pairId ?? `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      if (!original.pairId) {
-        // Marcar también la(s) fila(s) del original (puede ser mixto con groupId).
-        if (original.groupId) await prisma.bankTransaction.updateMany({ where: { groupId: original.groupId }, data: { pairId } });
-        else await prisma.bankTransaction.update({ where: { id: original.id }, data: { pairId } });
-      }
+    if (!original) throw notFound("El movimiento original de la contraparte no existe.");
+    const group = original.groupId
+      ? await prisma.bankTransaction.findMany({ where: { groupId: original.groupId } })
+      : [original];
+    if (group.some(r => r.pairId)) throw conflict("El movimiento original ya tiene contraparte.");
+    if (group.some(r => r.noCounterpart || r.debtApplied !== 0 || r.hourlyShiftId)) {
+      throw badRequest("El movimiento original no admite contraparte (está marcado sin contraparte o aplicado a una deuda/turno).");
     }
+    if (original.type === data.type) throw badRequest("La contraparte debe ser del signo opuesto (ingreso ↔ salida).");
+    const originalTotal = group.reduce((t, r) => t + r.amount, 0);
+    if (originalTotal !== cash + bank) {
+      throw badRequest(`La contraparte debe ser por el mismo importe del original (${originalTotal}). Las contrapartes parciales no están definidas.`);
+    }
+    // La contraparte se fecha en el día del original para que el par cuadre en su día, salvo
+    // que ese día ya esté cerrado: entonces cuenta hoy (no altera un día cerrado).
+    const originalDay = toBogotaDateStr(original.date);
+    when = (await isOpenPeriod(originalDay, original.date)) ? original.date : now;
+    pairId = `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await prisma.bankTransaction.updateMany({ where: { id: { in: group.map(r => r.id) } }, data: { pairId } });
   }
 
   const base = {
@@ -100,9 +122,6 @@ export async function create(data: {
     noCounterpart: data.noCounterpart === true,
   };
 
-  const cash = Math.round(data.cashAmount ?? 0);
-  const bank = Math.round(data.bankAmount ?? 0);
-
   // Movimiento MIXTO: parte efectivo + parte transferencia → dos registros enlazados
   // por un groupId compartido para que la UI los muestre como UN solo movimiento.
   if (cash > 0 && bank > 0) {
@@ -114,10 +133,9 @@ export async function create(data: {
     return { mixed: true, parts: [a, b] };
   }
 
-  // Movimiento simple (un solo medio).
-  const medium = data.medium === "cash" ? "cash" : "bank";
-  const amount = (cash + bank) || data.amount;
-  return prisma.bankTransaction.create({ data: { ...base, medium, amount } });
+  // Movimiento simple: el medio sale del desglose validado arriba (nunca un "bank" por defecto).
+  const medium = cash > 0 ? "cash" : "bank";
+  return prisma.bankTransaction.create({ data: { ...base, medium, amount: cash + bank } });
 
   });
 }

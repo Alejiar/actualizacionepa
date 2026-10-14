@@ -5,6 +5,7 @@ import * as shipday from "./shipday.service";
 import { notFound, conflict } from "../lib/errors";
 import { toBogotaDateStr, todayBogota } from "../lib/date-range";
 import { applyDebtDelta } from "./driver.service";
+import { MAX_MONEY } from "../lib/money-validation";
 
 // ─── Cache de settings (evita 1 query por cada orden sincronizada) ────────────
 let _settingsCache: { shipdayCommission: number } | null = null;
@@ -228,13 +229,21 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
 
     const completed = await shipday.getCompletedOrders(apiKey, from, to);
     partialError = completed.partialError;
+    const invalidFees: string[] = [];
     for (const co of completed) {
       const orderId = String(co.orderId);
       const deliveredAt = shipday.getCompletedDeliveredAt(co);
       // Ignorar lo anterior al día de arranque.
       if (branch.ordersSince && deliveredAt < branch.ordersSince) continue;
+      const fee = shipday.getCompletedDeliveryValue(co);
+      if (!validFee(fee)) {
+        // Tarifa inválida (negativa, no numérica o fuera de rango): no se persiste; el ciclo
+        // queda marcado como incompleto para que se revise, sin datos financieros inválidos.
+        invalidFees.push(orderId);
+        continue;
+      }
       const created = await persistDeliveredOrder(id, orderId, {
-        deliveryValue: shipday.getCompletedDeliveryValue(co),
+        deliveryValue: fee,
         driverShipdayId: shipday.getCompletedCarrierId(co),
         orderNumber: co.orderNumber ?? null,
         customerName: co.delivery?.name ?? null,
@@ -244,6 +253,11 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
         raw: co as object,
       });
       if (created) ordersCount++;
+    }
+    if (invalidFees.length) {
+      const msg = `Pedidos omitidos por tarifa inválida: ${invalidFees.slice(0, 10).join(", ")}${invalidFees.length > 10 ? "…" : ""}`;
+      console.warn(`[sync] ${msg}`);
+      partialError = partialError ? `${partialError} · ${msg}` : msg;
     }
 
     await prisma.branch.update({
@@ -322,7 +336,13 @@ interface DeliveredPayload {
   raw: object;
 }
 
+/** Tarifa externa válida: entero seguro, no negativo, dentro del rango de INTEGER. */
+function validFee(v: number): boolean {
+  return Number.isSafeInteger(v) && v >= 0 && v <= MAX_MONEY;
+}
+
 async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p: DeliveredPayload): Promise<boolean> {
+  if (!validFee(p.deliveryValue)) throw new Error(`Tarifa inválida para el pedido ${shipdayOrderId}`);
   return moneyTransaction(async () => {
   // Lápida: un pedido que un admin eliminó (vía EditRequest) NO debe resucitar aunque
   // Shipday lo siga reportando entregado. Sin esta guarda, el borrado "no pega".
@@ -461,8 +481,10 @@ export async function reconcileBranch(id: string, from: string, to: string): Pro
   let created = 0;
   for (const so of delivered) {
     const orderId = String(so.orderId);
+    const fee = shipday.getOrderDeliveryValue(so);
+    if (!validFee(fee)) { console.warn(`[reconcile] pedido ${orderId} omitido por tarifa inválida`); continue; }
     const ok = await persistDeliveredOrder(id, orderId, {
-      deliveryValue: shipday.getOrderDeliveryValue(so),
+      deliveryValue: fee,
       driverShipdayId: shipday.getOrderCarrierId(so),
       orderNumber: so.orderNumber ?? null,
       customerName: so.customer?.name ?? null,

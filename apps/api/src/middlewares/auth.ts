@@ -18,8 +18,8 @@ declare global {
  * desactivar a un usuario surte efecto de inmediato (antes el rol viajaba en el token y
  * un admin degradado conservaba sus privilegios hasta 7 días).
  *
- * Además, cualquier cambio del usuario (rol, estado, contraseña o nombre) invalida las
- * sesiones emitidas ANTES de ese cambio (`iat` < `updatedAt`): obliga a iniciar sesión de nuevo.
+ * Además, cambiar la contraseña, el rol o el estado incrementa `User.tokenVersion` y las
+ * sesiones emitidas con una versión anterior dejan de ser válidas de inmediato.
  */
 export async function requireAuth(req: Request, _res: Response, next: NextFunction) {
   const header = req.headers.authorization;
@@ -27,21 +27,23 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     return next(unauthorized("Token no proporcionado"));
   }
   const token = header.slice("Bearer ".length).trim();
-  let payload: JwtPayload & { iat?: number };
+  let payload: JwtPayload;
   try {
-    payload = verifyToken(token) as JwtPayload & { iat?: number };
+    payload = verifyToken(token);
   } catch {
     return next(unauthorized("Token inválido o expirado"));
   }
   try {
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, email: true, name: true, role: true, active: true, updatedAt: true },
+      select: { id: true, email: true, name: true, role: true, active: true, tokenVersion: true },
     });
     if (!user || !user.active) return next(unauthorized("Sesión no válida: usuario inexistente o desactivado"));
-    // iat está en segundos; se tolera 1 s de redondeo.
-    if (payload.iat != null && payload.iat * 1000 < user.updatedAt.getTime() - 1000) {
-      return next(unauthorized("Tu cuenta cambió. Inicia sesión de nuevo."));
+    // Revocación por VERSIÓN persistida (sin hueco de precisión de segundos): cambiar
+    // contraseña, rol o estado incrementa tokenVersion e invalida los tokens anteriores.
+    // Un token sin `tv` (emitido antes de esta versión) equivale a la versión 0.
+    if ((payload.tv ?? 0) !== user.tokenVersion) {
+      return next(unauthorized("Tu sesión fue cerrada por un cambio en tu cuenta. Inicia sesión de nuevo."));
     }
     req.user = { sub: user.id, email: user.email, name: user.name, role: user.role };
     next();
