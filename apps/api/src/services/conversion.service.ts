@@ -1,3 +1,4 @@
+import { assertMoney } from "../lib/money-validation";
 import { prisma } from "../lib/prisma";
 import { notFound, badRequest } from "../lib/errors";
 import { bogotaOpenRange } from "../lib/date-range";
@@ -28,7 +29,7 @@ export async function createConversion(input: {
 }) {
   const branch = await prisma.branch.findUnique({ where: { id: input.branchId } });
   if (!branch) throw notFound("Sucursal no encontrada");
-  if (input.amount <= 0) throw badRequest("El monto debe ser mayor a 0");
+  assertMoney(input.amount);
 
   // El domiciliario es solo informativo: NO altera su deuda.
   let driverName: string | undefined;

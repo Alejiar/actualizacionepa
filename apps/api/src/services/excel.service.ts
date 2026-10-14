@@ -22,9 +22,13 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
     prisma.movement.aggregate({ where: { category: { in: [16, 18] }, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
     prisma.baseTransaction.aggregate({ where: { type: "entrega", date: range, ...(branchId ? { branchId } : {}) }, _sum: { cashAmount: true, bankAmount: true, amount: true } }),
     prisma.baseTransaction.aggregate({ where: { type: "pago", date: range, ...(branchId ? { branchId } : {}) }, _sum: { cashAmount: true, bankAmount: true, amount: true } }),
-    prisma.bankTransaction.aggregate({ where: { type: "ingreso", date: range }, _sum: { amount: true } }),
-    prisma.bankTransaction.aggregate({ where: { type: "egreso", date: range }, _sum: { amount: true } }),
+    // Por medio: un BankTransaction puede ser en efectivo o por transferencia. Antes se sumaban
+    // todos en la columna BANCO como "Transferencias", inflando el banco con efectivo.
+    prisma.bankTransaction.groupBy({ by: ["medium"], where: { type: "ingreso", date: range }, _sum: { amount: true } }),
+    prisma.bankTransaction.groupBy({ by: ["medium"], where: { type: "egreso", date: range }, _sum: { amount: true } }),
   ]);
+  const byMedium = (rows: { medium: string; _sum: { amount: number | null } }[], m: "cash" | "bank") =>
+    rows.find(x => x.medium === m)?._sum.amount ?? 0;
 
   const ws = wb.addWorksheet("CIERRE MES");
   ws.columns = [
@@ -63,8 +67,8 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
     ["3-Gastos Efectivo / 4-Banco", gEf._sum.amount ?? 0, gBk._sum.amount ?? 0],
     ["5-Bases Entregadas", givenCash || givenTotal, givenBank],
     ["6-Bases Devueltas", paidCash || paidTotal, paidBank],
-    ["Transferencias Ingreso", "", bankIn._sum.amount ?? 0],
-    ["Transferencias Salida", "", bankOut._sum.amount ?? 0],
+    ["Movimientos Ingreso (efectivo / transferencia)", byMedium(bankIn, "cash"), byMedium(bankIn, "bank")],
+    ["Movimientos Salida (efectivo / transferencia)", byMedium(bankOut, "cash"), byMedium(bankOut, "bank")],
     ["15-Nómina Efectivo / 16-Banco", nEf._sum.amount ?? 0, nBk._sum.amount ?? 0],
     ["Deudas Clientes (saldo)", report.clientDebt.balance, ""],
   ];

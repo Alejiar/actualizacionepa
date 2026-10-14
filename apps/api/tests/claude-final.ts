@@ -177,6 +177,21 @@ async function main() {
       assert.equal(await snap(), before, "algún pedido se reescribió (xmin cambió)");
       assert.equal((await p.driver.findUniqueOrThrow({ where: { id: d.id } })).pendingDebt, 0);
     });
+    await check("Excel: movimientos separados por medio (efectivo no se suma al banco)", async () => {
+      const excel = await import(`${SRC}/services/excel.service.ts`);
+      const { createRequire } = await import("node:module");
+      const ExcelJS = createRequire(path.resolve(__dirname, "../package.json"))("exceljs");
+      const sum = async () => {
+        const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await excel.buildMonthlyExcel(month) as any);
+        let row: any = null; wb.getWorksheet("CIERRE MES")!.eachRow((r: any) => { if (String(r.getCell(1).value).startsWith("Movimientos Ingreso")) row = r; });
+        return [Number(row.getCell(2).value || 0), Number(row.getCell(3).value || 0)];
+      };
+      const [c0, b0] = await sum();
+      await p.bankTransaction.create({ data: { type: "ingreso", medium: "cash", amount: 5000, description: "Excel ef", noCounterpart: true } });
+      await p.bankTransaction.create({ data: { type: "ingreso", medium: "bank", amount: 7000, description: "Excel bk", noCounterpart: true } });
+      const [c1, b1] = await sum();
+      assert.deepEqual([c1 - c0, b1 - b0], [5000, 7000]);
+    });
     await check("Salud: /api/health informa el estado de la cola financiera", async () => {
       const r = await api("/health", "GET", undefined, null);
       assert.equal(r.status, 200); assert.equal(r.body.ok, true); assert.equal(typeof r.body.moneyQueue.busyMs, "number");

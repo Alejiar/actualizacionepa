@@ -2,6 +2,7 @@ import { applyDebtDelta, applyBankToDriver } from "./driver.service";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { bogotaOpenRange } from "../lib/date-range";
 import { badRequest } from "../lib/errors";
+import { assertMoney } from "../lib/money-validation";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import * as hourlySvc from "./hourly-client.service";
 
@@ -38,15 +39,14 @@ export async function create(data: {
 }) {
   return moneyTransaction(async () => {
   // Punto 4 — bloquear montos inválidos (0 o negativos) que falsean los saldos.
-  const cashIn0 = Math.round(data.cashAmount ?? 0);
-  const bankIn0 = Math.round(data.bankAmount ?? 0);
-  const totalIn = (cashIn0 + bankIn0) || Math.round(data.amount ?? 0);
-  if (!Number.isFinite(totalIn) || totalIn <= 0) {
-    throw badRequest("El monto debe ser mayor a 0.");
-  }
-  if (cashIn0 < 0 || bankIn0 < 0) {
-    throw badRequest("Los montos no pueden ser negativos.");
-  }
+  // Montos enteros en pesos: sin redondeos silenciosos, sin negativos ni desbordes.
+  if (data.type !== "ingreso" && data.type !== "egreso") throw badRequest("Tipo inválido (ingreso o egreso).");
+  if (data.cashAmount != null) assertMoney(data.cashAmount, true);
+  if (data.bankAmount != null) assertMoney(data.bankAmount, true);
+  const cashIn0 = data.cashAmount ?? 0;
+  const bankIn0 = data.bankAmount ?? 0;
+  const totalIn = (cashIn0 + bankIn0) || data.amount;
+  assertMoney(totalIn);
 
   let driverName: string | undefined;
   if (data.driverId) {
