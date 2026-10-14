@@ -256,6 +256,13 @@ reintentar, y vuelve a abrirlo al terminar.
   y generar Prisma antes de iniciar. Nunca aplicar solo la primera migración.
 - No cambiar la fórmula de bases del mes ni la política de reversiones históricas
   sin una decisión explícita del dueño.
+- Autenticación (oct-2026): `requireAuth` lee rol y estado del usuario en la BD en cada
+  petición; un cambio del usuario invalida sesiones previas. Falta de permisos = **403**
+  (`requireAdmin`); 401 solo para sesión inválida, porque el frontend cierra sesión ante 401.
+- `moneyTransaction` tiene un tiempo máximo propio que libera la cola si una operación se
+  cuelga; `/api/health` expone `moneyQueue`. No envolver llamadas externas en ella.
+- Un movimiento de Caja confirmado (cualquier categoría) solo lo corrige un admin o un
+  `EditRequest` aprobado; el usuario normal solo edita pendientes (cobro de domicilios).
 
 - Las migraciones de Prisma (`apps/api/prisma/migrations/**/*.sql`) SÍ deben
   versionarse. El `.gitignore` tiene una regla `*.sql` para respaldos de
