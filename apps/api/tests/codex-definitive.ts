@@ -253,7 +253,9 @@ async function main() {
         if (u === "https://api.shipday.com/orders/query") return new Response(JSON.stringify([{ orderId: "late-poll", deliveryFee: 10000, deliveryTime: new Date().toISOString(), carrier: { id: "def-driver" } }]));
         throw Error("Red bloqueada");
       }) as any;
-      try { await assert.rejects(() => branches.syncBranch(branch.id, { forceDrivers: true }), code(409)); assert.equal(await p.shipdayOrder.count(), 0); }
+      // Claude (auditoría final): el pedido cerrado se omite y se reporta en lugar de abortar
+      // el ciclo completo (abortar impedía cargar los pedidos abiertos de la misma ventana).
+      try { const r = await branches.syncBranch(branch.id, { forceDrivers: true }); assert.equal(r.partial, true); assert.match(r.error!, /late-poll/); assert.equal(await p.shipdayOrder.count(), 0); }
       finally { globalThis.fetch = (async (input: any, init: any) => { if (!String(input).startsWith("http://127.0.0.1:")) throw Error("Red bloqueada"); return realFetch(input, init); }) as any; }
     });
     await check("LOCK18", "Cierre de sucursal bloquea solo su mes; nuevas operaciones abiertas siguen válidas", async () => {

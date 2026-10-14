@@ -1,3 +1,4 @@
+import { HttpError } from "../lib/errors";
 /**
  * Cliente HTTP para la API oficial de Shipday.
  * Auth: Authorization: Basic <apiKey>  (la key va cruda, sin base64)
@@ -125,7 +126,9 @@ async function shipdayFetch<T>(apiKey: string, path: string): Promise<T> {
     if (res.ok) return res.json() as Promise<T>;
     const text = await res.text().catch(() => "");
     if (res.status === 401 || res.status === 403) {
-      throw new Error(`API Key de Shipday inválida o sin permisos (${res.status}).`);
+      // 400 (configuración de la sucursal), no 500: la interfaz muestra este mensaje en vez de
+      // "Error interno". Nunca 401/403: el frontend cerraría la sesión o lo leería como permisos.
+      throw new HttpError(400, `API Key de Shipday inválida o sin permisos (${res.status}).`);
     }
     lastErr = new Error(`Shipday API error ${res.status}: ${text}`);
     if (!isRetriable(res.status, text)) throw lastErr; // error definitivo → propagar ya
@@ -312,6 +315,9 @@ async function fetchCompletedPage(apiKey: string, body: object): Promise<Shipday
       return Array.isArray(data) ? data : (data.orders ?? []);
     }
     const text = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      throw new HttpError(400, `API Key de Shipday inválida o sin permisos (${res.status}).`);
+    }
     lastErr = new Error(`Shipday /orders/query devolvió ${res.status}: ${text}`);
     if (!isRetriable(res.status, text)) throw lastErr; // error definitivo → propagar ya
     if (attempt === MAX_ATTEMPTS) break;

@@ -61,7 +61,7 @@ export default function LoginPage() {
                 required
                 autoFocus
                 className="flex-1 bg-transparent py-3 outline-none text-sm"
-                placeholder="admin@cashbuddy.local"
+                placeholder="tu-correo@empresa.com"
               />
             </div>
           </div>

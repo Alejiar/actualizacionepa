@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { todayBogota } from "./format";
 import * as api from "./sd-api";
+import { getToken } from "./api";
 
 const Ctx = createContext<{
   date: string;
@@ -31,6 +32,9 @@ export function DayProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
     async function loadOperatingDay() {
+      // Sin sesión (pantalla de login) no se consulta: cada intento era un 401 en el
+      // registro del lanzador cada 8 s mientras la ventana esperaba el inicio de sesión.
+      if (!getToken()) return;
       try {
         const r = await api.getCurrentOperatingDate();
         if (cancelled || !r?.date) return;

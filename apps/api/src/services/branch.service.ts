@@ -2,7 +2,7 @@ import { refreshOrderStats } from "../lib/order-stats";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { encryptApiKey, decryptApiKey, DecryptError } from "../lib/crypto";
 import * as shipday from "./shipday.service";
-import { notFound, conflict } from "../lib/errors";
+import { notFound, conflict, HttpError } from "../lib/errors";
 import { toBogotaDateStr, todayBogota } from "../lib/date-range";
 import { applyDebtDelta } from "./driver.service";
 import { MAX_MONEY } from "../lib/money-validation";
@@ -231,6 +231,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
     const completed = await shipday.getCompletedOrders(apiKey, from, to);
     partialError = completed.partialError;
     const invalidFees: string[] = [];
+    const closedSkipped: string[] = [];
     for (const co of completed) {
       const orderId = String(co.orderId);
       const deliveredAt = shipday.getCompletedDeliveredAt(co);
@@ -243,7 +244,7 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
         invalidFees.push(orderId);
         continue;
       }
-      const created = await persistDeliveredOrder(id, orderId, {
+      const created = await persistOrSkipClosed(closedSkipped, id, orderId, {
         deliveryValue: fee,
         driverShipdayId: shipday.getCompletedCarrierId(co),
         orderNumber: co.orderNumber ?? null,
@@ -257,6 +258,11 @@ export async function syncBranch(id: string, opts: SyncOptions = {}): Promise<{ 
     }
     if (invalidFees.length) {
       const msg = `Pedidos omitidos por tarifa inválida: ${invalidFees.slice(0, 10).join(", ")}${invalidFees.length > 10 ? "…" : ""}`;
+      console.warn(`[sync] ${msg}`);
+      partialError = partialError ? `${partialError} · ${msg}` : msg;
+    }
+    if (closedSkipped.length) {
+      const msg = `Pedidos de un período cerrado sin cargar (D7 pendiente): ${closedSkipped.slice(0, 10).join(", ")}${closedSkipped.length > 10 ? "…" : ""}`;
       console.warn(`[sync] ${msg}`);
       partialError = partialError ? `${partialError} · ${msg}` : msg;
     }
@@ -340,6 +346,22 @@ interface DeliveredPayload {
 /** Tarifa externa válida: entero seguro, no negativo, dentro del rango de INTEGER. */
 function validFee(v: number): boolean {
   return Number.isSafeInteger(v) && v >= 0 && v <= MAX_MONEY;
+}
+
+/**
+ * Persiste un pedido del sondeo sin dejar que UN pedido de un período cerrado (409, D7
+ * pendiente) aborte el ciclo completo: antes, el primer rezagado de un día o mes cerrado
+ * lanzaba el error y ningún pedido posterior de esa ventana (3 o 14 días) se cargaba, en
+ * cada ciclo. El pedido cerrado sigue SIN cargarse (misma política), pero queda
+ * identificado en el aviso de la sincronización y se reintenta en el siguiente ciclo.
+ */
+async function persistOrSkipClosed(skipped: string[], branchId: string, orderId: string, p: DeliveredPayload): Promise<boolean> {
+  try {
+    return await persistDeliveredOrder(branchId, orderId, p);
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 409) { skipped.push(orderId); return false; }
+    throw err;
+  }
 }
 
 async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p: DeliveredPayload): Promise<boolean> {
@@ -473,7 +495,7 @@ async function getCommissionPercent(): Promise<number> {
  * día anterior que nunca se sincronizaron porque la cuenta ya tenía muchos pedidos
  * históricos.
  */
-export async function reconcileBranch(id: string, from: string, to: string): Promise<{ checked: number; created: number }> {
+export async function reconcileBranch(id: string, from: string, to: string): Promise<{ checked: number; created: number; skipped: string[] }> {
   const branch = await prisma.branch.findUnique({ where: { id } });
   if (!branch) throw notFound("Sucursal no encontrada");
   if (!branch.active) throw conflict("La sucursal está desactivada. Su historial permanece disponible.");
@@ -483,11 +505,12 @@ export async function reconcileBranch(id: string, from: string, to: string): Pro
   const delivered = await shipday.getDeliveredOrdersInRange(apiKey, from, to);
 
   let created = 0;
+  const skipped: string[] = [];
   for (const so of delivered) {
     const orderId = String(so.orderId);
     const fee = shipday.getOrderDeliveryValue(so);
     if (!validFee(fee)) { console.warn(`[reconcile] pedido ${orderId} omitido por tarifa inválida`); continue; }
-    const ok = await persistDeliveredOrder(id, orderId, {
+    const ok = await persistOrSkipClosed(skipped, id, orderId, {
       deliveryValue: fee,
       driverShipdayId: shipday.getOrderCarrierId(so),
       orderNumber: so.orderNumber ?? null,
@@ -500,7 +523,8 @@ export async function reconcileBranch(id: string, from: string, to: string): Pro
     if (ok) created++;
   }
 
-  return { checked: delivered.length, created };
+  if (skipped.length) console.warn(`[reconcile] pedidos de un período cerrado sin cargar (D7 pendiente): ${skipped.join(", ")}`);
+  return { checked: delivered.length, created, skipped };
 }
 
 export async function syncAllBranches(opts: SyncOptions = {}) {
