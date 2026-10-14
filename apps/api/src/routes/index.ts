@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { requireAdmin, requireAuth } from "../middlewares/auth";
+import { moneyQueueStatus } from "../lib/prisma";
 import { requireAuthorizedDevice, logActivity } from "../middlewares/device";
 import { asyncHandler } from "../middlewares/error";
 import { validate } from "../middlewares/validate";
@@ -41,7 +42,13 @@ import {
 
 export const apiRouter = Router();
 
-apiRouter.get("/health", (_req, res) => res.json({ ok: true }));
+// Si la cola financiera lleva más del tiempo máximo tomada, la caja está trabada: se
+// informa 503 para que el lanzador (watchdog) pueda reiniciar el backend.
+apiRouter.get("/health", (_req, res) => {
+  const q = moneyQueueStatus();
+  const stuck = q.busyMs > 130_000;
+  res.status(stuck ? 503 : 200).json({ ok: !stuck, moneyQueue: q });
+});
 
 // ─── Branding público (logo + nombre, sin auth para la pantalla de login) ──────
 apiRouter.get("/branding", asyncHandler(settings.branding));

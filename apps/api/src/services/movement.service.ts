@@ -1,7 +1,7 @@
 import { assertMoney } from "../lib/money-validation";
 import type { CreateMovementRequest, Movement, UpdateMovementRequest } from "@cash-buddy/shared";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { notFound, badRequest, unauthorized } from "../lib/errors";
+import { notFound, badRequest, forbidden } from "../lib/errors";
 import { ensureDay } from "./day.service";
 import { toMovement } from "./mappers";
 
@@ -56,8 +56,15 @@ export async function updateMovement(
   if (patch.amount !== undefined) assertMoney(patch.amount);
   const exists = await prisma.movement.findUnique({ where: { id } });
   if (!exists) throw notFound("Movimiento no encontrado");
+  // Un movimiento CONFIRMADO ya afecta la caja: un usuario normal no lo corrige directamente
+  // (de ninguna categoría: nómina, ingresos, conversiones...). Debe pedir la corrección por
+  // solicitud aprobada. Los pendientes (p. ej. cobro de domicilios aún no recibido) siguen
+  // editables: es el flujo normal de "recibir pago" del sistema de Caja.
+  if (!isAdmin && exists.status === "confirmed") {
+    throw forbidden("Este movimiento ya está confirmado. Solicita la corrección a un administrador.");
+  }
   if (isExpense(exists.category) || isExpense(patch.category)) {
-    if (!isAdmin) throw unauthorized("Se requieren permisos de administrador para editar gastos");
+    if (!isAdmin) throw forbidden("Se requieren permisos de administrador para editar gastos");
     if (patch.status !== undefined) throw badRequest("Usa la aprobación de gastos para cambiar su estado.");
     if (exists.status === "confirmed") throw badRequest("Un gasto confirmado se corrige mediante una solicitud aprobada por un administrador.");
   }

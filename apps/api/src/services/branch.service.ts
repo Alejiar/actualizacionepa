@@ -51,8 +51,10 @@ export interface BranchInput {
   apiKey: string;
 }
 
-function sanitize(b: { id: string; name: string; address: string | null; phone: string | null; active: boolean; syncStatus: string; syncMessage: string | null; lastSyncAt: Date | null; createdAt: Date; updatedAt: Date }) {
-  return { ...b, apiKey: "***" };
+// Nunca devolver la API Key (ni cifrada) al navegador.
+function sanitize<T extends { apiKeyEnc?: string }>(b: T) {
+  const { apiKeyEnc: _omit, ...rest } = b;
+  return { ...rest, apiKey: "***" };
 }
 
 export async function listBranches() {
@@ -343,7 +345,10 @@ async function persistDeliveredOrder(branchId: string, shipdayOrderId: string, p
   const dateStr = toBogotaDateStr(p.deliveredAt);
 
   if (existing) {
-    await prisma.shipdayOrder.update({where:{id:existing.id},data:{shipdayDeliveryValue:p.deliveryValue}});
+    // Solo escribir si la tarifa externa cambió: cada sondeo reprocesa toda su ventana.
+    if (existing.shipdayDeliveryValue !== p.deliveryValue) {
+      await prisma.shipdayOrder.update({where:{id:existing.id},data:{shipdayDeliveryValue:p.deliveryValue}});
+    }
     // AUTOSANACIÓN: el pedido ya está guardado, pero puede ser un stub del webhook con
     // valor 0 (ver SELF_HEAL_SINCE). Si el registro está en 0 y el polling ya trae la
     // tarifa real (>0), lo corregimos UNA sola vez: valor, comisión, número y datos del
@@ -494,6 +499,8 @@ export async function syncAllBranches(opts: SyncOptions = {}) {
 export async function startOrdersFromToday(branchId: string) {
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw notFound("Sucursal no encontrada");
+  // Antes de tocar nada: en una sucursal desactivada no se cambia la fecha de corte.
+  if (!branch.active) throw conflict("La sucursal está desactivada. Su historial permanece disponible.");
 
   const since = new Date(todayBogota() + "T00:00:00.000-05:00");
 

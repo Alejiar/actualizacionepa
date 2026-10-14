@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { refreshOrderStats } from "../lib/order-stats";
 import type { Request, Response } from "express";
 import { prisma, moneyTransaction } from "../lib/prisma";
@@ -13,8 +14,15 @@ const DELIVERED_STATES = new Set([
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN ?? "";
 // Solo limita trabajo autenticado de ESTA ruta; no comparte contadores con caja.
 let activeWebhooks = 0;
-const MAX_ACTIVE_WEBHOOKS = 4;
+// Webhooks AUTENTICADOS procesándose a la vez en este proceso. Los que exceden la cola
+// financiera (64 en espera) reciben 503 para reintento; por debajo de eso se encolan.
+// Con 4 se rechazaban ráfagas legítimas de Shipday (16 de 20 entregas simultáneas).
+const MAX_ACTIVE_WEBHOOKS = 32;
 
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 }
@@ -65,7 +73,7 @@ export async function shipdayWebhook(req: Request, res: Response) {
   const tokens = candidates
     .map((c) => (Array.isArray(c) ? c[0] : c))
     .filter((v): v is string => typeof v === "string" && v.length > 0);
-  const ok = !!WEBHOOK_TOKEN && tokens.some((t) => t === WEBHOOK_TOKEN || t === `Bearer ${WEBHOOK_TOKEN}`);
+  const ok = !!WEBHOOK_TOKEN && tokens.some((t) => safeEqual(t, WEBHOOK_TOKEN) || safeEqual(t, `Bearer ${WEBHOOK_TOKEN}`));
   if (!ok) {
     // Sin transacciones, consultas, colas internas ni contadores para tráfico falso.
     return res.status(401).json({ error: "Token inválido o ausente" });

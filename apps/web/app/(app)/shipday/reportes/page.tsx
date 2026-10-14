@@ -9,6 +9,7 @@ import type { Branch, MonthlyClose, MonthlyReport } from "@/lib/sd-api";
 import { formatCOP, todayBogota } from "@/lib/format";
 import { MonthlyCloseWizard } from "@/components/wizards/MonthlyCloseWizard";
 import { useLive } from "@/lib/use-live";
+import { useAuth } from "@/lib/auth";
 
 export default function ReportesPage() {
   const [closes, setCloses] = useState<MonthlyClose[]>([]);
@@ -16,6 +17,9 @@ export default function ReportesPage() {
   const [branchId, setBranchId] = useState("");
   const [loading, setLoading] = useState(true);
   const [showClose, setShowClose] = useState(false);
+  // Cerrar el mes fija el capital de arranque: solo administradores (el servidor también lo exige).
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [downloading, setDownloading] = useState<string | null>(null);
   // Mes por defecto en zona Bogotá (NO UTC): en la noche del último día del mes, el UTC ya
   // marca el mes siguiente (vacío) y el Excel salía en ceros aunque el mes en curso tuviera datos.
@@ -70,12 +74,14 @@ export default function ReportesPage() {
                 coincide siempre con el reporte que se ve en pantalla. */}
             <Download className="h-4 w-4" /> {downloading === reportMonth + (branchId || "global") ? "Generando..." : `Excel de ${reportMonth}`}
           </button>
+          {isAdmin && (
           <button
             onClick={() => setShowClose(true)}
             className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition"
           >
             <Lock className="h-4 w-4" /> Cerrar mes
           </button>
+          )}
         </div>
       </div>
 

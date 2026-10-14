@@ -5,6 +5,7 @@ function parseClient<T extends z.ZodTypeAny>(schema:T, value:unknown):z.infer<T>
 function debtMedium(value:unknown) { if(value != null && value !== "cash" && value !== "bank") throw badRequest("Medio inválido"); }
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
+import { todayBogota } from "../lib/date-range";
 
 // Usuario + equipo (PC) que hace la acción. Compatible con getActor(req).
 type ActorLike = { id?: string | null; name?: string | null; deviceId?: string | null; deviceName?: string | null };
@@ -91,9 +92,19 @@ export async function addDebt(clientId: string, description: string, amount: num
   return moneyTransaction(async () => {
   assertMoney(amount);
   debtMedium(medium);
+  if (typeof description !== "string" || !description.trim()) throw badRequest("La deuda necesita una descripción.");
+  // Fecha opcional: debe ser un día real (no "2026-02-31") y no futuro. Una fecha futura
+  // dejaba un préstamo en efectivo fuera de la caja de hoy aunque el dinero salió hoy.
+  if (date != null && date !== "") {
+    const ok = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
+      && new Date(date + "T12:00:00-05:00").toLocaleDateString("en-CA", { timeZone: "America/Bogota" }) === date;
+    if (!ok) throw badRequest("Fecha inválida. Usa el formato AAAA-MM-DD.");
+    if (date > todayBogota()) throw badRequest("La fecha de la deuda no puede ser futura.");
+  }
+  if (!(await prisma.client.findUnique({ where: { id: clientId }, select: { id: true } }))) throw notFound("Cliente no encontrado");
   const [debt] = await prisma.$transaction([
     prisma.clientDebt.create({
-      data: { clientId, description, amount, medium: medium ?? null, createdBy: actor?.id ?? null, createdByName: actor?.name ?? null, deviceId: actor?.deviceId ?? null, deviceName: actor?.deviceName ?? null, ...(date ? { createdAt: new Date(date + "T12:00:00") } : {}) },
+      data: { clientId, description, amount, medium: medium ?? null, createdBy: actor?.id ?? null, createdByName: actor?.name ?? null, deviceId: actor?.deviceId ?? null, deviceName: actor?.deviceName ?? null, ...(date ? { createdAt: new Date(date + "T12:00:00-05:00") } : {}) },
     }),
     prisma.client.update({
       where: { id: clientId },

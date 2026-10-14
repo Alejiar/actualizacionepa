@@ -86,12 +86,14 @@ export default function SucursalesPage() {
           <h1 className="text-2xl font-black">Sucursales</h1>
           <p className="text-sm text-muted-foreground">Gestiona tus cuentas de Shipday por sucursal</p>
         </div>
+        {isAdmin && (
         <button
           onClick={() => { setEditing(null); setShowForm(true); }}
           className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition"
         >
           <Plus className="h-4 w-4" /> Nueva sucursal
         </button>
+        )}
       </div>
 
       {loading ? (
@@ -166,12 +168,14 @@ export default function SucursalesPage() {
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${syncing === b.id ? "animate-spin" : ""}`} /> Sincronizar
                 </button>
-                <button onClick={() => { setEditing(b); setShowForm(true); }} className="p-2 rounded-xl border border-border hover:bg-secondary transition">
+                {isAdmin && (<>
+                <button onClick={() => { setEditing(b); setShowForm(true); }} aria-label={`Editar ${b.name}`} className="p-2 rounded-xl border border-border hover:bg-secondary transition">
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
                 <button onClick={() => handleDelete(b.id, b.name)} disabled={!b.active} title="Desactivar conservando historial" aria-label={`Desactivar ${b.name}`} className="p-2 rounded-xl border border-red-200 text-red-500 hover:bg-red-50 transition disabled:opacity-40">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
+                </>)}
               </div>
             </div>
           ))}

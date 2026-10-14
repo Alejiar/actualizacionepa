@@ -35,7 +35,11 @@ export const env = {
   port: Number(process.env.PORT ?? 4000),
   host: process.env.HOST ?? "0.0.0.0",
   databaseUrl: required("DATABASE_URL"),
-  jwtSecret: required("JWT_SECRET", "dev-insecure-secret-change-me"),
+  // En producción el secreto es obligatorio: con el valor de desarrollo cualquiera podría
+  // firmar tokens de administrador.
+  jwtSecret: (process.env.NODE_ENV ?? "development") === "production"
+    ? required("JWT_SECRET")
+    : required("JWT_SECRET", "dev-insecure-secret-change-me"),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
   admin: {
     email: process.env.ADMIN_EMAIL ?? "admin@cashbuddy.local",

@@ -24,6 +24,20 @@ export function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
+  // La configuración inicial y los Términos los guarda solo un administrador (el servidor lo
+  // exige). Un usuario normal ve un aviso en vez de un formulario que fallaría.
+  if ((!state.settings.setupComplete || !state.settings.termsAcceptedAt) && user?.role !== "admin") {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6 text-center">
+        <div className="max-w-md space-y-2">
+          <Lock className="mx-auto h-8 w-8 text-muted-foreground" />
+          <h1 className="text-xl font-black">Sistema pendiente de configuración</h1>
+          <p className="text-sm text-muted-foreground">Un administrador debe completar la configuración inicial y aceptar los términos antes de que puedas operar.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!state.settings.setupComplete) {
     return <WelcomeWizard />;
   }

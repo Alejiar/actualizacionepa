@@ -1,5 +1,6 @@
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
+import { assertMoney } from "../lib/money-validation";
 import { todayBogota } from "../lib/date-range";
 import type { Actor } from "../lib/actor";
 
@@ -124,10 +125,20 @@ export async function updateHourlyClient(
 }
 
 export async function deleteHourlyClient(id: string) {
-  // Los turnos caen por Cascade. Los BankTransaction de pagos/cobros ya ocurridos se
-  // dejan intactos a propósito: son dinero REAL que se movió y debe seguir en el ledger
-  // de caja/banco; solo desaparece el registro informativo de la deuda.
-  await prisma.hourlyClient.delete({ where: { id } });
+  // Con historia financiera (turnos) NO se borra: el borrado en cascada eliminaba turnos y
+  // deuda pendiente y dejaba huérfanos sus movimientos de banco. Se desactiva y se conserva
+  // todo, igual que sucursales y clientes normales. Sin turnos, se puede borrar.
+  return moneyTransaction(async () => {
+    const client = await prisma.hourlyClient.findUnique({ where: { id }, select: { id: true } });
+    if (!client) throw notFound("Cliente no encontrado");
+    const shifts = await prisma.hourlyShift.count({ where: { hourlyClientId: id } });
+    if (shifts > 0) {
+      await prisma.hourlyClient.update({ where: { id }, data: { active: false } });
+      return { deactivated: true };
+    }
+    await prisma.hourlyClient.delete({ where: { id } });
+    return { deleted: true };
+  });
 }
 
 // ─── Turnos ───────────────────────────────────────────────────────────────────
@@ -284,9 +295,12 @@ export async function payClient(
   if (totalPending <= 0) throw badRequest("El cliente no tiene deuda pendiente");
 
   const medium = input.medium === "bank" ? "bank" : "cash";
-  const requested = input.payAll ? totalPending : Math.round(input.amount ?? 0);
-  const applied = Math.min(requested, totalPending);
-  if (applied <= 0) throw badRequest("El monto del abono debe ser mayor a 0");
+  const requested = input.payAll ? totalPending : input.amount;
+  assertMoney(requested);
+  // Igual que en clientes normales: un abono mayor que la deuda se rechaza completo (antes
+  // se truncaba en silencio y el excedente recibido no quedaba registrado en ningún lado).
+  if (requested > totalPending) throw badRequest("El abono supera la deuda pendiente. No se admite sobrepago.");
+  const applied = requested;
 
   return prisma.$transaction(async (tx) => {
     const shifts = await tx.hourlyShift.findMany({

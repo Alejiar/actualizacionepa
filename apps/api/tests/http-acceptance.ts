@@ -22,7 +22,7 @@ async function main(){
   assert.equal((await fetch(base+'/login')).status,200);record('Frontend estático');
   const before=await p.settings.findUniqueOrThrow({where:{id:'singleton'}});
   const denied=await fetch(base+'/api/settings',{method:'PATCH',headers:headers(user),body:JSON.stringify({initialCash:1})});
-  assert.equal(denied.status,401);assert.equal((await p.settings.findUniqueOrThrow({where:{id:'singleton'}})).initialCash,before.initialCash);record('Usuario no administrador no puede alterar capital');
+  assert.equal(denied.status,403); /* falta de permisos = 403: el 401 cerraba la sesión en el frontend */ assert.equal((await p.settings.findUniqueOrThrow({where:{id:'singleton'}})).initialCash,before.initialCash);record('Usuario no administrador no puede alterar capital');
   const report=await fetch(base+'/api/sd/report/2026-09',{headers:headers(admin)});assert.equal(report.status,200);
   const body=await report.json() as any;assert.equal(body.debtReconciliation.total,body.debtReconciliation.basesAllTime+body.debtReconciliation.commission);record('Reporte HTTP concilia deuda');
   const excel=await fetch(base+'/api/sd/closes/export/2026-09',{headers:headers(admin)});assert.equal(excel.status,200);

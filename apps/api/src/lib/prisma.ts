@@ -39,15 +39,40 @@ export const prisma: PrismaClient = new Proxy(root, {
 /** Exclusión entre procesos vía PostgreSQL, ANTES de leer cualquier saldo.
  * Adecuado al volumen de una caja: serializa escrituras, no lecturas normales.
  * Nunca envolver llamadas a Shipday; solo persistencia local de cada pedido. */
+const MONEY_TX_TIMEOUT_MS = 120_000;
+let moneyBusySince: number | null = null;
+
 export async function moneyTransaction<T>(work: () => Promise<T>): Promise<T> {
   if (scope.getStore()) return work();
-  const release = await enterMoneyQueue();
-  try { return await root.$transaction(async tx => {
-    await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '3s'");
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(20260928, 1)`;
-    return scope.run(tx, work);
-  }, { maxWait: 15000, timeout: 120000 });
-  } finally { release(); }
+  const granted = await enterMoneyQueue();
+  // Liberación idempotente: liberar dos veces entregaría la caja a dos operaciones a la vez.
+  let released = false;
+  const release = () => { if (!released) { released = true; moneyBusySince = null; granted(); } };
+  moneyBusySince = Date.now();
+  let guardTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const txPromise = root.$transaction(async tx => {
+      await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '3s'");
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(20260928, 1)`;
+      return scope.run(tx, work);
+    }, { maxWait: 15000, timeout: MONEY_TX_TIMEOUT_MS });
+    // Si el trabajo queda colgado (promesa que nunca se resuelve), Prisma cierra y revierte la
+    // transacción a los 120 s pero NO rechaza esta promesa. Sin este límite propio, la cola en
+    // memoria quedaba tomada para siempre y toda la caja respondía 503 hasta reiniciar.
+    const guard = new Promise<never>((_, reject) => {
+      guardTimer = setTimeout(() => reject(new HttpError(503, "La operación de caja excedió el tiempo máximo y se canceló.")), MONEY_TX_TIMEOUT_MS + 5000);
+    });
+    txPromise.catch(() => {}); // evita un rechazo no manejado si el guardia ganó la carrera
+    return await Promise.race([txPromise, guard]);
+  } finally {
+    if (guardTimer) clearTimeout(guardTimer);
+    release();
+  }
+}
+
+/** Estado de la cola financiera para /api/health (detecta una caja trabada). */
+export function moneyQueueStatus() {
+  return { busyMs: moneyBusySince ? Date.now() - moneyBusySince : 0, waiting: moneyQueue.length };
 }
 
 // Esperar fuera de PostgreSQL: una ráfaga legítima no ocupa todas las conexiones

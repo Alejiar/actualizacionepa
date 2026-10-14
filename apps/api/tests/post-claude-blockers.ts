@@ -67,7 +67,7 @@ async function main(){
  });
  await check('D2: usuario no edita, confirma, rechaza ni borra directamente',async()=>{
   const before=await p.movement.findUniqueOrThrow({where:{id:movement.id}});
-  for(const [suffix,method,body] of [['','PATCH',{amount:1,status:'confirmed'}],['/approve','POST',{}],['/reject','POST',{}],['','DELETE',undefined]] as const)assert.equal((await api('/movements/'+movement.id+suffix,method,body,user)).status,401);
+  for(const [suffix,method,body] of [['','PATCH',{amount:1,status:'confirmed'}],['/approve','POST',{}],['/reject','POST',{}],['','DELETE',undefined]] as const)assert.equal((await api('/movements/'+movement.id+suffix,method,body,user)).status,403);
   assert.deepEqual(await p.movement.findUniqueOrThrow({where:{id:movement.id}}),before);
  });
  await check('D2: aprobación concurrente aplica un solo gasto y conserva aprobador',async()=>{
@@ -80,7 +80,7 @@ async function main(){
   assert.equal((await api('/movements/'+movement.id,'DELETE')).status,400);
   assert.equal((await api('/movements/'+movement.id+'/reject','POST',{})).status,400);
   const before=await balances(),r=await request('Movement',movement.id,{amount:{old:'10000',new:'7000'}});
-  assert.equal((await api('/edit-requests/'+r.id+'/review','POST',{action:'approved'},user)).status,401);
+  assert.equal((await api('/edit-requests/'+r.id+'/review','POST',{action:'approved'},user)).status,403);
   assert.equal((await approve(r.id)).status,200);assert.equal((await balances()).cash,before.cash+3000);
   const report=await closes.getMonthlyReport(month);assert.equal(report.expenses.total,7000);
   const del=await request('Movement',movement.id,{},'delete');assert.equal((await approve(del.id)).status,200);
@@ -154,7 +154,7 @@ async function main(){
   const closed=await closes.closeMonth(month,branch.id);
   const snapshot=()=>Promise.all([p.shipdayOrder.findMany({where:{branchId:branch.id}}),p.baseTransaction.findMany({where:{branchId:branch.id},orderBy:{id:'asc'}}),p.driverPayment.findMany({where:{driverId:driver.id}}),p.bankTransaction.findMany({where:{driverId:driver.id}}),p.monthlyClose.findUnique({where:{id:closed.id}}),p.driver.findUnique({where:{id:driver.id}})]);
   const before=await snapshot(),report=await closes.getMonthlyReport(month,branch.id),bal=await balances();
-  assert.equal((await api('/branches/'+branch.id,'DELETE',undefined,user)).status,401);
+  assert.equal((await api('/branches/'+branch.id,'DELETE',undefined,user)).status,403);
   assert.equal((await api('/branches/'+branch.id,'DELETE')).status,204);
   assert.equal((await p.branch.findUniqueOrThrow({where:{id:branch.id}})).active,false);assert.deepEqual(await snapshot(),before);assert.deepEqual(await closes.getMonthlyReport(month,branch.id),report);assert.deepEqual(await balances(),bal);
   assert.equal((await webhook('blockers-token','after-archive')).status,200);assert.equal(await p.shipdayOrder.count({where:{shipdayOrderId:'after-archive'}}),0);
