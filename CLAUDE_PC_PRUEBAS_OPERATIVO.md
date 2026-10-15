@@ -78,3 +78,26 @@ La DEMO se puede conservar o eliminar (`DROP DATABASE cashbuddy_demo`) cuando ya
 - Se corrigieron 8 defectos (D-B1 a D-B8). Se recompilaron `apps/api/dist` y `apps/web/out`.
 - A las 17:44 se terminó el backend de la DEMO y el watchdog lo relanzó con la compilación nueva. Quedó sano y los saldos DEMO siguen en 118.600 / 122.400.
 - La ventana de CashBuddy.exe sigue **sin verificación visual** (control de pantalla denegado).
+
+## 9. Tercera ronda (15-oct-2026): decisiones finales y migración 37
+
+**Respaldo y migración de la DEMO:**
+- Respaldo: `backups/cashbuddy_demo_pre_decisiones_20261015_043234.dump`.
+- Se cerró CashBuddy.exe y su backend. Era necesario para regenerar Prisma: con la app abierta falla con `EPERM`.
+- Se aplicó la migración 37 a `cashbuddy_demo` con el comando documentado en `INSTALACION.md`, que carga `DATABASE_URL` desde el `.env` de la raíz.
+- Resultado: **37/37** migraciones; el turno existente de "Cliente por hora DEMO" quedó con su tarifa 10.000 / 5.000.
+
+**Estado después de reabrir CashBuddy.exe:**
+- Backend nuevo (05:01) y `/api/health` OK.
+- Saldos DEMO **118.600 / 122.400**, sin cambios.
+- Las pruebas con clics se hicieron en copias, con la red bloqueada.
+
+**Para tus pruebas:** `GUIA_MANUAL_PRUEBAS_EPA.md` E13–E18. Hazlas el mismo día y en orden:
+- tarifas;
+- turno nocturno;
+- trabajadores;
+- Cierre;
+- D7;
+- pedido manual después del Cierre.
+
+**Ventana de CashBuddy.exe:** sigue sin verificación visual.

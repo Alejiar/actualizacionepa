@@ -32,6 +32,15 @@ function calcAmounts(driverHour: number, companyHour: number, minutes: number) {
   const driver = Math.round((driverHour * minutes) / 60);
   return { driver, company: total - driver, total };
 }
+/** El turno cruza medianoche cuando la salida es anterior a la entrada (termina al día siguiente). */
+function isOvernight(start: string, end: string): boolean {
+  const m = calcMinutes(start, end);
+  return Number.isFinite(m) && m > 0 && start.padStart(5, "0") > end.padStart(5, "0");
+}
+function nextDay(day: string): string {
+  const d = new Date(day + "T12:00:00-05:00");
+  return new Date(d.getTime() + 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}
 function fmtMinutes(min: number): string {
   if (!Number.isFinite(min) || min <= 0) return "—";
   const h = Math.floor(min / 60), m = min % 60;
@@ -64,6 +73,7 @@ export function HourlyClientsTab() {
   const [payFor, setPayFor] = useState<api.HourlyClient | null>(null);
   const [editTarget, setEditTarget] = useState<{ shift: api.HourlyShift; client: api.HourlyClient | null } | null>(null);
   const [deleteReq, setDeleteReq] = useState<{ shift: api.HourlyShift; label: string } | null>(null);
+  const [ratesFor, setRatesFor] = useState<api.HourlyClient | null>(null);
   // Se incrementa tras cada edición/borrado para que el modal de Historial recargue.
   const [historyKey, setHistoryKey] = useState(0);
 
@@ -235,12 +245,16 @@ export function HourlyClientsTab() {
 
                 {expanded && (
                   <div className="border-t border-border px-5 pb-5 pt-4 space-y-4">
-                    <button
-                      onClick={() => setShiftFor(c)}
-                      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary/10 text-primary font-bold hover:bg-primary/20 transition"
-                    >
-                      <Plus className="h-4 w-4" /> Registrar turno
-                    </button>
+                    {c.active ? (
+                      <button
+                        onClick={() => setShiftFor(c)}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary/10 text-primary font-bold hover:bg-primary/20 transition"
+                      >
+                        <Plus className="h-4 w-4" /> Registrar turno
+                      </button>
+                    ) : (
+                      <p className="text-xs text-center text-muted-foreground">Cliente desactivado: reactívalo para registrar turnos.</p>
+                    )}
 
                     {/* Turnos registrados (ya pagados al domi, pendientes de cobro al cliente) */}
                     {debtShifts.length > 0 && (
@@ -305,6 +319,10 @@ export function HourlyClientsTab() {
                       <button onClick={() => toggleActive(c)} className="flex-1 py-2 text-xs font-bold border border-border rounded-xl hover:bg-secondary transition">
                         {c.active ? "Desactivar" : "Reactivar"}
                       </button>
+                      <button onClick={() => setRatesFor(c)}
+                        className="flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold border border-border rounded-xl hover:bg-secondary transition">
+                        <Pencil className="h-3.5 w-3.5" /> Editar tarifas
+                      </button>
                       {isAdmin && (
                         <button onClick={() => removeClient(c)}
                           className="flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold border border-red-500/30 text-red-500 rounded-xl hover:bg-red-500/10 transition">
@@ -320,6 +338,7 @@ export function HourlyClientsTab() {
         </div>
       )}
 
+      {ratesFor && <RatesModal client={ratesFor} onClose={() => setRatesFor(null)} onDone={() => { setRatesFor(null); refresh(); }} />}
       {showCreate && <CreateClientModal onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); load(); }} />}
       {showHistory && (
         <HistoryModal
@@ -580,6 +599,95 @@ function MediumButtons({ value, onChange }: { value: "cash" | "bank"; onChange: 
   );
 }
 
+function OvernightConfirm({ date, start, end, minutes, amounts, saving, confirmLabel, onCancel, onConfirm }: {
+  date: string; start: string; end: string; minutes: number;
+  amounts: { driver: number; company: number; total: number };
+  saving: boolean; confirmLabel: string; onCancel: () => void; onConfirm: () => void;
+}) {
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  const duration = `${hours} hora${hours === 1 ? "" : "s"}${rest ? ` y ${rest} min` : ""}`;
+  return (
+    <div className="space-y-3" role="alertdialog" aria-label="Confirmar turno nocturno">
+      <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3 text-sm font-bold text-amber-700 dark:text-amber-400">
+        🌙 Este turno termina mañana y tiene una duración de {duration}. ¿Deseas registrarlo?
+      </div>
+      <div className="rounded-xl bg-secondary/40 p-3 space-y-2 text-sm">
+        <div className="flex justify-between"><span className="text-muted-foreground">Inicio</span><span className="font-bold">{fmtDay(date)} {start}</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Fin</span><span className="font-bold">{fmtDay(nextDay(date))} {end}</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Horas totales</span><span className="font-bold">{fmtMinutes(minutes)}</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Para el domiciliario</span><span className="font-bold text-amber-600 tnum">{formatCOP(amounts.driver)}</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Para la empresa</span><span className="font-bold text-green-600 tnum">{formatCOP(amounts.company)}</span></div>
+        <div className="flex justify-between border-t border-border/60 pt-2"><span className="text-muted-foreground">Total</span><span className="font-black tnum">{formatCOP(amounts.total)}</span></div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={onCancel} disabled={saving} className="py-3 rounded-xl border border-border font-bold hover:bg-secondary transition">Cancelar</button>
+        <button onClick={onConfirm} disabled={saving} className="py-3 rounded-xl bg-primary text-primary-foreground font-bold hover:opacity-90 transition disabled:opacity-50">
+          {saving ? "Guardando…" : confirmLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Editar tarifas. Los turnos ya registrados conservan la tarifa con la que se valoraron. */
+function RatesModal({ client, onClose, onDone }: { client: api.HourlyClient; onClose: () => void; onDone: () => void }) {
+  const [driver, setDriver] = useState(String(client.driverHourValue));
+  const [company, setCompany] = useState(String(client.companyHourValue));
+  const [confirming, setConfirming] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const dV = Number(driver) || 0, cV = Number(company) || 0;
+  const unchanged = dV === client.driverHourValue && cV === client.companyHourValue;
+
+  function review() {
+    if (driver === "" || company === "") { toast.error("Escribe las dos tarifas (pueden ser 0, pero no ambas)"); return; }
+    if (dV + cV <= 0) { toast.error("Define al menos un valor por hora mayor a 0"); return; }
+    if (unchanged) { toast.error("No cambiaste ninguna tarifa"); return; }
+    setConfirming(true);
+  }
+  async function save() {
+    setSaving(true);
+    try {
+      await api.updateHourlyClient(client.id, { driverHourValue: dV, companyHourValue: cV });
+      toast.success(`Tarifas de ${client.name} actualizadas`);
+      onDone();
+    } catch (err) { toast.error(String(err)); setSaving(false); }
+  }
+
+  return (
+    <ModalShell title={`Tarifas · ${client.name}`} onClose={onClose}>
+      <div className="rounded-xl bg-secondary/40 p-3 text-xs text-muted-foreground">
+        Actual: Domi {formatCOP(client.driverHourValue)}/h · Empresa {formatCOP(client.companyHourValue)}/h · Total {formatCOP(client.driverHourValue + client.companyHourValue)}/h
+      </div>
+      {!confirming ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nuevo valor hora domiciliario"><MoneyInput value={driver} onChange={setDriver} autoFocus /></Field>
+            <Field label="Nueva ganancia empresa / hora"><MoneyInput value={company} onChange={setCompany} /></Field>
+          </div>
+          <div className="rounded-xl bg-secondary/40 p-3 text-center">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Nuevo total a cobrar por hora</div>
+            <div className="text-2xl font-black tnum">{formatCOP(dV + cV)}</div>
+          </div>
+          <button onClick={review} className="w-full py-3 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition">Revisar cambio</button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="rounded-xl bg-secondary/40 p-3 space-y-1 text-sm">
+            <div className="flex justify-between"><span className="text-muted-foreground">Domiciliario / hora</span><span className="font-bold">{formatCOP(client.driverHourValue)} → {formatCOP(dV)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Empresa / hora</span><span className="font-bold">{formatCOP(client.companyHourValue)} → {formatCOP(cV)}</span></div>
+            <div className="flex justify-between border-t border-border/60 pt-1"><span className="text-muted-foreground">Total / hora</span><span className="font-black">{formatCOP(client.driverHourValue + client.companyHourValue)} → {formatCOP(dV + cV)}</span></div>
+          </div>
+          <p className="text-xs text-muted-foreground">Los turnos ya registrados y la deuda actual del cliente <b>no cambian</b>: conservan la tarifa con que se registraron. Solo los turnos nuevos usarán la tarifa nueva.</p>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => setConfirming(false)} disabled={saving} className="py-3 rounded-xl border border-border font-bold hover:bg-secondary transition">Volver</button>
+            <button onClick={save} disabled={saving} className="py-3 rounded-xl bg-primary text-primary-foreground font-bold hover:opacity-90 transition disabled:opacity-50">{saving ? "Guardando…" : "Confirmar tarifas"}</button>
+          </div>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
 function CreateClientModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState("");
   const [driver, setDriver] = useState("");
@@ -635,17 +743,21 @@ function ShiftModal({ client, drivers, onClose, onDone }: { client: api.HourlyCl
   const [end, setEnd] = useState("");
   const [medium, setMedium] = useState<"cash" | "bank">("cash");
   const [saving, setSaving] = useState(false);
+  // Turno que cruza medianoche: se muestra un resumen y se exige confirmar (decisión del dueño).
+  const [confirming, setConfirming] = useState(false);
 
   const minutes = calcMinutes(start, end);
   const preview = Number.isFinite(minutes) && minutes > 0 ? calcAmounts(client.driverHourValue, client.companyHourValue, minutes) : null;
+  const overnight = isOvernight(start, end);
 
-  async function submit() {
+  async function submit(confirmOvernight = false) {
     if (!driverId) { toast.error("Selecciona un domiciliario"); return; }
     if (!start || !end) { toast.error("Ingresa hora de entrada y salida"); return; }
-    if (!preview) { toast.error("La hora de salida debe ser posterior a la de entrada"); return; }
+    if (!preview) { toast.error("La hora de salida no puede ser igual a la de entrada"); return; }
+    if (overnight && !confirmOvernight) { setConfirming(true); return; }
     setSaving(true);
     try {
-      await api.registerHourlyShift(client.id, { driverId, startTime: start, endTime: end, date, medium });
+      await api.registerHourlyShift(client.id, { driverId, startTime: start, endTime: end, date, medium, ...(overnight ? { confirmOvernight: true } : {}) });
       toast.success("Turno registrado y pagado al domiciliario");
       onDone();
     } catch (err) { toast.error(String(err)); setSaving(false); }
@@ -653,6 +765,11 @@ function ShiftModal({ client, drivers, onClose, onDone }: { client: api.HourlyCl
 
   return (
     <ModalShell title={`Registrar turno · ${client.name}`} onClose={onClose}>
+      {confirming && preview ? (
+        <OvernightConfirm date={date} start={start} end={end} minutes={minutes} amounts={preview}
+          saving={saving} confirmLabel="Sí, registrar turno"
+          onCancel={() => setConfirming(false)} onConfirm={() => submit(true)} />
+      ) : (
       <div className="space-y-3">
         <Field label="Domiciliario">
           <select value={driverId} onChange={e => setDriverId(e.target.value)}
@@ -703,11 +820,15 @@ function ShiftModal({ client, drivers, onClose, onDone }: { client: api.HourlyCl
         <p className="text-[11px] text-muted-foreground">
           Al registrar se descuenta {preview ? formatCOP(preview.driver) : "el pago al domiciliario"} del {medium === "cash" ? "efectivo" : "banco"} y se suma {preview ? formatCOP(preview.total) : "el total"} a la deuda del cliente.
         </p>
-        <button onClick={submit} disabled={saving}
+        {overnight && (
+          <p className="text-[11px] text-amber-600">🌙 La salida es anterior a la entrada: el turno termina el día siguiente ({fmtDay(nextDay(date))}). Te pediremos confirmarlo.</p>
+        )}
+        <button onClick={() => submit()} disabled={saving}
           className="w-full py-3 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition disabled:opacity-50">
           {saving ? "Guardando…" : "Registrar turno"}
         </button>
       </div>
+      )}
     </ModalShell>
   );
 }
@@ -726,25 +847,33 @@ function EditShiftModal({ shift, client, drivers, isAdmin, onClose, onDone }: {
   const [end, setEnd] = useState(shift.endTime);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
+  // Vista previa con la tarifa CONGELADA del turno (la del cliente pudo cambiar después).
+  const rates = shift.driverHourValue != null && shift.companyHourValue != null
+    ? { d: shift.driverHourValue, c: shift.companyHourValue }
+    : client ? { d: client.driverHourValue, c: client.companyHourValue } : null;
   const minutes = calcMinutes(start, end);
-  const preview = client && Number.isFinite(minutes) && minutes > 0
-    ? calcAmounts(client.driverHourValue, client.companyHourValue, minutes) : null;
+  const preview = rates && Number.isFinite(minutes) && minutes > 0 ? calcAmounts(rates.d, rates.c, minutes) : null;
+  const timesChanged = start !== shift.startTime || end !== shift.endTime;
+  const overnight = isOvernight(start, end);
 
   const changedDriver = !!driverId && driverId !== (shift.driverId ?? "");
   const changed = changedDriver || start !== shift.startTime || end !== shift.endTime || date !== shift.date;
 
-  async function submit() {
+  async function submit(confirmOvernight = false) {
     if (!driverId) { toast.error("Selecciona un domiciliario"); return; }
     if (!start || !end) { toast.error("Ingresa hora de entrada y salida"); return; }
-    if (!Number.isFinite(minutes) || minutes <= 0) { toast.error("La hora de salida debe ser posterior a la de entrada"); return; }
+    if (!Number.isFinite(minutes) || minutes <= 0) { toast.error("La hora de salida no puede ser igual a la de entrada"); return; }
     if (!changed) { toast.error("No cambiaste nada"); return; }
     if (!isAdmin && !reason.trim()) { toast.error("Indica el motivo del cambio"); return; }
+    const needsConfirm = overnight && timesChanged;
+    if (needsConfirm && !confirmOvernight) { setConfirming(true); return; }
 
     setSaving(true);
     try {
       if (isAdmin) {
-        await api.editHourlyShift(shift.id, { driverId, startTime: start, endTime: end, date });
+        await api.editHourlyShift(shift.id, { driverId, startTime: start, endTime: end, date, ...(needsConfirm ? { confirmOvernight: true } : {}) });
         toast.success("Turno actualizado");
       } else {
         const changes: Record<string, api.EditRequestChange> = {};
@@ -756,6 +885,7 @@ function EditShiftModal({ shift, client, drivers, isAdmin, onClose, onDone }: {
         if (start !== shift.startTime) changes.startTime = { old: shift.startTime, new: start };
         if (end !== shift.endTime) changes.endTime = { old: shift.endTime, new: end };
         if (date !== shift.date) changes.date = { old: shift.date, new: date };
+        if (needsConfirm) changes.confirmOvernight = { old: "", new: "true" };
         await api.createEditRequest({
           entityType: "HourlyShift",
           entityId: shift.id,
@@ -771,6 +901,11 @@ function EditShiftModal({ shift, client, drivers, isAdmin, onClose, onDone }: {
 
   return (
     <ModalShell title={`Editar turno${shift.hourlyClient ? ` · ${shift.hourlyClient.name}` : ""}`} onClose={onClose}>
+      {confirming && preview ? (
+        <OvernightConfirm date={date} start={start} end={end} minutes={minutes} amounts={preview}
+          saving={saving} confirmLabel={isAdmin ? "Sí, guardar cambios" : "Sí, enviar solicitud"}
+          onCancel={() => setConfirming(false)} onConfirm={() => submit(true)} />
+      ) : (
       <div className="space-y-3">
         {!isAdmin && (
           <div className="rounded-xl bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
@@ -817,11 +952,15 @@ function EditShiftModal({ shift, client, drivers, isAdmin, onClose, onDone }: {
               className="w-full px-3 py-2 rounded-xl bg-secondary/50 border border-border outline-none focus:ring-2 ring-primary/40 resize-none" />
           </Field>
         )}
-        <button onClick={submit} disabled={saving || !changed}
+        {overnight && timesChanged && (
+          <p className="text-[11px] text-amber-600">🌙 La salida es anterior a la entrada: el turno termina el día siguiente. Te pediremos confirmarlo.</p>
+        )}
+        <button onClick={() => submit()} disabled={saving || !changed}
           className="w-full py-3 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition disabled:opacity-50">
           {saving ? "Guardando…" : isAdmin ? "Guardar cambios" : "Enviar solicitud"}
         </button>
       </div>
+      )}
     </ModalShell>
   );
 }

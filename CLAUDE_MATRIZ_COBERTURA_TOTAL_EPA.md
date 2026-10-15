@@ -1,12 +1,13 @@
 # Matriz de cobertura funcional total — EPA Domicilios
 
-Fecha: 14-oct-2026, segunda ronda. Rama `claude/entrega-final`, sin push. Probado en el PC de pruebas.
+Fecha: 15-oct-2026, tercera ronda (las 3 decisiones finales del dueño, §9). Rama `claude/entrega-final`, sin push. Probado en el PC de pruebas.
 
 **Cómo se probó la interfaz:**
 - Sobre una **copia** de la base DEMO (`cashbuddy_claude_ui`).
 - Con la compilación de producción servida en `127.0.0.1:4918`.
 - Con la **red externa bloqueada**, así que no hubo ninguna llamada a Shipday.
-- La DEMO del propietario (`cashbuddy_demo`) **no se tocó**: sigue en 118.600 / 122.400.
+- La DEMO del propietario (`cashbuddy_demo`) **no recibió datos de prueba**: sigue en 118.600 / 122.400.
+- En la tercera ronda solo recibió la migración 37 (aditiva), con respaldo previo.
 
 **De dónde salen las cifras.** Todas vienen de ejecuciones reales:
 - `tests/claude-cobertura.ts` lee **todas** las rutas del router;
@@ -22,9 +23,10 @@ Fecha: 14-oct-2026, segunda ronda. Rama `claude/entrega-final`, sin push. Probad
 | **API**: rutas, cada una con su efecto | 124 | 124 | 124 | 5 | 0 | 0 | 0 |
 | **API**: barrido de permisos (401 sin sesión / 403 operador) | 153 | 153 | 153 | 0 | 0 | 0 | 0 |
 | **API**: reglas F14 / D7 / pedidos post-cierre / último admin / movimientos por medio | 29 | 29 | 29 | 3 | 0 | 0 | 0 |
+| **API**: 3 decisiones finales — pedido manual tras el Cierre, turno nocturno, tarifas y trabajadores (§9) | 25 | 25 | 25 | 0 | 0 | 0 | 0 |
 | **Interfaz**: pantallas × rol | 46 | 46 | 46 | 2 | 0 | 0 | 0 |
-| **Interfaz**: formularios con **clic real**, criterios del §3 | 27 | 27 | 27 | 8 | 0 | 0 | 0 |
-| **Interfaz**: recorrido financiero completo, con importes calculados aparte (§4) | 1 (12 tramos) | 1 | 1 | 0 | 0 | 0 | 0 |
+| **Interfaz**: formularios con **clic real**, criterios del §3 y §9 | 33 | 33 | 33 | 9 | 0 | 0 | 0 |
+| **Interfaz**: recorridos financieros completos, con importes calculados aparte (§4 y §9.3) | 2 (12 + 12 tramos) | 2 | 2 | 0 | 0 | 0 | 0 |
 | **Escritorio**: CashBuddy.exe, procesos | 9 | 9 | 9 | 2 | 0 | 0 | 0 |
 | **Escritorio**: ventana WebView2 vista en pantalla | 1 | 0 | 0 | 0 | 0 | **1** | 0 |
 | **Integración**: Shipday (solo lectura, simulado y red bloqueada) | 6 | 6 | 6 | 2 | 0 | 0 | 0 |
@@ -234,3 +236,165 @@ Se repitió completa, sobre bases temporales nuevas, después de todos los arreg
 | F14-D7-pedidos + MOV-PARTS + USR-ADMIN | 29 / 29 |
 | Migración F14 con datos heredados | ✔ (34 → 36) |
 | Cobertura de rutas | 28 / 28 pasos, 124 rutas |
+
+## 9. Tercera ronda (15-oct-2026): las 3 decisiones finales del dueño
+
+**Decisiones implementadas:**
+1. **Pedido manual tras el Cierre:** se registra con su fecha real si el mes sigue abierto. No mueve caja.
+2. **Turno que cruza medianoche:** se permite, con aviso y confirmación explícita.
+3. **Funciones nuevas en la interfaz:**
+   - editar las tarifas de un cliente por hora;
+   - renombrar trabajadores;
+   - desactivar o reactivar trabajadores;
+   - eliminar trabajadores solo si no tienen historial.
+
+### 9.1 API (`tests/claude-decisiones-finales.ts`, 25 / 25)
+
+| ID | Caso | Resultado |
+|---|---|---|
+| ORD-M1 | Pedido manual antes del Cierre: 10.000 → comisión 3.000, caja igual | ✔ |
+| ORD-M2 | **Ejemplo del dueño:** Cierre y luego pedido de 40.000 del mismo día. Comisión +12.000; caja, banco y conteo intactos; resumen del día, `DailyDriverStat`, reporte mensual y Excel lo incluyen | ✔ |
+| ORD-M3 | Día anterior cerrado con el mes abierto: se carga en ese día, no en hoy | ✔ |
+| ORD-M4 | Mes cerrado → 409, sin rastro | ✔ |
+| ORD-M5 | Tarifa 0, negativa, decimal, texto o fuera de rango → 400 | ✔ |
+| ORD-M6 | Mismo número, sucursal y día → 409; otro día se permite | ✔ |
+| ORD-M7 | Reintento con la misma clave (también simultáneo): una sola comisión. Dos pedidos distintos simultáneos suman bien | ✔ |
+| ORD-M8 | Domiciliario o sucursal desactivados → 400 | ✔ |
+| ORD-M9 | Fecha futura o inexistente → 400 | ✔ |
+| ORD-M10 | D7 intacto: tras el Cierre, una base (mueve dinero) sigue en 409 | ✔ |
+| ORD-M11 | Pedido tras el Cierre vinculado a un cliente: deuda **fiada**, caja intacta | ✔ |
+| HR-1 | Turno normal: 2 h, −24.000, deuda +36.000, tarifa congelada | ✔ |
+| HR-2 | Nocturno de 2 h: sin confirmar → 409 con detalle y nada cambia; confirmado → se registra | ✔ |
+| HR-3 | **Ejemplo del dueño** 10:00 → 09:00: aviso de 23 horas y valores 276.000 / 138.000 / 414.000; confirmado = 1.380 min | ✔ |
+| HR-4 | Rechazos sin efecto: entrada = salida, hora o fecha inválidas, fecha futura, confirmación no booleana | ✔ |
+| HR-5 | Turno duplicado (doble clic y simultáneo): un solo turno y un solo pago | ✔ |
+| HR-6 | Turno de un mes cerrado → 409 | ✔ |
+| HR-7 | Tarifa: validación; los turnos viejos y la deuda no cambian; editar uno viejo usa **su** tarifa; los nuevos usan la nueva | ✔ |
+| HR-8 | Editar a nocturno: el admin necesita confirmar; la solicitud del operador exige la confirmación y se aplica al aprobar | ✔ |
+| HR-9 | Cliente o domiciliario desactivados → 400 | ✔ |
+| HR-10 | Turno nocturno por banco reflejado en Movimientos y en el resumen del día | ✔ |
+| WK-1 | Renombrar: mismo id, pagos enlazados, sin duplicar, nombre limpio | ✔ |
+| WK-2 | Nombre vacío, solo espacios, de más de 80 caracteres o repetido (sin importar mayúsculas) → rechazo | ✔ |
+| WK-3 | Desactivar: conserva el historial y bloquea pagos nuevos; reactivar los permite | ✔ |
+| WK-4 | Eliminar: operador 403; con historial 409 y se conserva; sin historial el admin lo elimina | ✔ |
+
+**Migración 37** (`hourly_shift_rate_snapshot`, aditiva):
+- Probada sobre una copia de la DEMO (36 → 37). El turno real recibió su tarifa 10.000 / 5.000.
+- Un turno no reconstruible queda en NULL. Se probó en una transacción revertida.
+
+### 9.2 Interfaz con clic real (copia de la DEMO, red bloqueada)
+
+**Pedido manual:**
+- **Antes del Cierre:** P-ANTES 10.000 → B 3.000; caja igual.
+- **Después del Cierre** (Cierre de hoy 118.600 / 122.400 cuadrado):
+  - Al elegir la fecha aparece el aviso «🔒 Ese día ya tiene Cierre».
+  - Una hora futura (21:00 a las 04:36) se rechazó: el servidor lo validó y ahora el asistente avisa antes.
+  - A las 03:00: 40.000 → A 5.400 → **17.400**.
+  - Efectivo y banco igual; Cierre 118.600 / dif. 0.
+  - Historial del 15 en verde con comisión 15.000.
+  - Pedidos lo muestra el 15 a las 03:00; Deudas, A 17.400.
+- **Duplicado:** rechazado con mensaje.
+- **Tras reiniciar el servidor:** todo igual.
+
+**Turno nocturno:**
+- **10:00 → 09:00:** el aviso muestra «termina mañana y tiene una duración de 23 horas», el inicio 15/10 10:00, el fin 16/10 09:00 y los valores 230.000 / 115.000 / 345.000. **Cancelar** no guarda nada.
+- **23:00 → 01:00 confirmado:** efectivo −20.000 y deuda 30.000, con la tarifa congelada.
+- **Entrada = salida:** mensaje claro.
+- **Duplicado:** rechazado sin cobro.
+- **Solicitud del operador que pasa un turno a nocturno:** pide confirmación y la tarjeta de Solicitudes lo indica. Al aprobarla, efectivo −36.000 y deuda +54.000.
+- **Mes cerrado:** 409 con mensaje.
+
+**Editar tarifas:**
+- 10.000 / 5.000 → 12.000 / 6.000, con confirmación que avisa que los turnos existentes no cambian.
+- Tarifas en 0 se rechazan.
+- La deuda (60.000) y los turnos viejos no cambiaron.
+- **Turno viejo editado** de 08:00–10:00 a 08:00–11:00: se recalculó con **su** tarifa (30.000 / 45.000) → banco −10.000, deuda +15.000.
+- **Turno nuevo:** 24.000 / 36.000 con la tarifa nueva.
+
+**Trabajadores:**
+- **Alta y nómina:** alta y pago de 5.000 → efectivo −5.000.
+- **Renombrar:** mismo id; la nómina pagada sigue en 5.000.
+  - Vacío: botón deshabilitado.
+  - Repetido: rechazado.
+- **Desactivar:** confirmación; «Registrar pago» oculto; el pago por API da 400.
+- **Eliminar:** con historial se rechaza con mensaje; sin historial se eliminó.
+- **Reactivar:** OK.
+- **Domiciliario:** al renombrarlo, avisa que el vínculo con Shipday es por nombre.
+
+**Operador:**
+- Puede renombrar, activar o desactivar trabajadores y editar tarifas, igual que antes.
+- **No** ve «Eliminar trabajador»; la API le responde 403 con mensaje claro.
+
+**Barrido:** 20 pantallas × 2 roles, sin respuestas ≥ 400 ni avisos de error.
+
+### 9.3 Recorrido financiero de la tercera ronda (importes calculados aparte)
+
+Copia de la DEMO, día 15. Punto de partida: 118.600 / 122.400. Las operaciones de §9.2 la dejaron en **33.600 / 92.400**:
+- turno 23–01: −20.000 en efectivo;
+- turno de B: −20.000 y luego −10.000 por banco;
+- turno de A: −24.000 y luego −36.000 en efectivo;
+- nómina: −5.000 en efectivo.
+
+| Tramo | Acción | Esperado | Sistema |
+|---|---|---|---|
+| J1 | Pedido B 10.000 (con la sucursal desactivada se rechaza; tras activarla se registra) | B comisión 3.000; caja igual | ✔ |
+| J2 | Base 10.000 en efectivo a A | 23.600; base A 19.600 | ✔ |
+| J3 | Devolución de 5.000 por banco | banco 97.400; base A 14.600 | ✔ |
+| J4 | Pago de A: 5.400 comisión + 4.600 base, en efectivo | 33.600; A [0, 0, 10.000] | ✔ |
+| J5 | Ingreso por banco 7.000 → «Descontar de deuda» a B | banco 104.400; B comisión 0, crédito 4.000 | ✔ |
+| J6 | Cliente por hora abona 50.000 por banco | banco 154.400; deuda 115.000 | ✔ |
+| J7 | Salida 30.000 por banco + contraparte en efectivo | 63.600 / 124.400; sin contrapartes pendientes | ✔ |
+| — | Movimientos por medio, registro por registro | efectivo −55.000, banco +2.000 | ✔ |
+| J8 | Cierre en Caja | 63.600 / 124.400, diferencias 0 | ✔ |
+| J9 | Pedido manual de A, 40.000, tras el Cierre; base y turno siguen en 409 | A 12.000; caja igual; Cierre intacto | ✔ |
+| J10 | D7: movimiento olvidado −1.000 | esperado 62.600; conteo 63.600; 1 corrección | ✔ |
+| J11 | Cierre mensual (objetivo 300.000) + Excel | pendientes 10.000 + 84.600 + 15.000 + 115.000 = 224.600 → dejar 75.400 | ✔ |
+| J12 | Mes cerrado: pedido manual y turno de octubre → 409; reinicio → todo persiste | sin cambios | ✔ |
+
+**Cifras del mes:**
+- **Pedidos:** 30, por 362.000.
+- **Comisión:** 108.600. Son los 93.600 de la DEMO + 3.000 + 12.000.
+- **Comisiones pendientes:** 84.600. Son 72.600 de los domiciliarios reales + 12.000 de A.
+- **Crédito a favor:** 4.000.
+- **Bases:** entregadas 40.000, devueltas 30.000, pendientes 10.000.
+- **Gastos:** 10.000.
+- **Nómina:** 5.000.
+- **Clientes:** 15.000 + 115.000 por hora = 130.000.
+- **Utilidad:** 93.600.
+
+Las mismas cifras salieron de tres fuentes: el **cálculo a mano**, las **sumas SQL directas** y el **reporte/cierre/Excel** del sistema. En el Excel, TOTAL INFORMATIVO = 84.600 + 10.000 − 4.000 = 90.600.
+
+### 9.4 Pruebas anteriores ajustadas por las decisiones (la intención protegida se conserva)
+
+| Prueba | Regla anterior | Regla nueva | Qué sigue verificando |
+|---|---|---|---|
+| codex-definitive LOCK12 | Pedido manual tras el Cierre → 409 | Se carga en su día (201) | Ingresos y egresos de Caja tras el Cierre siguen en 409; nada mueve caja |
+| codex-definitive HOUR02 | Cambiar la tarifa re-preciaba un turno viejo al editarlo | El turno conserva su tarifa | Se sigue creando el egreso faltante cuando la tarifa propia del turno tiene valor para el domiciliario (40.000 / 76.000 / 24.000) |
+
+Primer diseño descartado: había restringido al admin la edición de tarifas y de trabajadores. Las pruebas existentes (claude-12 F02, Codex I07, cobertura WRK-01 y HOUR-01) mostraron que ese permiso del operador era parte del contrato, así que se **conservó** (no se inventó una restricción). Sus expectativas **no** se cambiaron.
+
+### 9.5 Regresión completa final (código de esta ronda)
+
+**12 de 12 grupos con salida 0.** Las 181 pruebas anteriores más las ampliaciones de Claude:
+
+| Grupo | Resultado |
+|---|---|
+| Financiera: audit-core, audit-extra, audit-sync, audit-clients, financial-acceptance, http-acceptance (45) | 0 fallas |
+| Bloqueadores (18) | 0 fallas |
+| Claude completa (15) | 15 / 15 |
+| 12 defectos (26) | 26 / 26 |
+| Codex independiente / bordes / definitiva (75) | 14 / 14 · 8 / 8 · 53 / 53 |
+| Migraciones: actualización + 34 (3 guiones) + F14 con datos heredados | ✔ (ahora 35 → 37) |
+| Auditoría final | 5 / 5 |
+| F14-D7-pedidos + MOV-PARTS + USR-ADMIN | 29 / 29 |
+| Cobertura de rutas | 28 / 28 pasos · **124 / 124 rutas (100 %)** |
+| **Decisiones finales (nueva)** | **25 / 25** |
+| Guía manual (E2–E18), sobre una copia de la DEMO | todas las cifras ✔ |
+| Tipos API y web / compilación de producción | 0 errores / correcta |
+
+### 9.6 Escritorio
+
+- Se cerró CashBuddy.exe para regenerar Prisma; si sigue abierto, el motor queda bloqueado (EPERM).
+- Se aplicó la migración 37 a la DEMO con el comando documentado, probado aquí.
+- Se volvió a abrir CashBuddy.exe: backend nuevo a las 05:01, `/api/health` OK, saldos DEMO 118.600 / 122.400.
+- La ventana **no se verificó visualmente**, porque el control de pantalla sigue denegado.

@@ -25,11 +25,11 @@ export async function remove(req: Request, res: Response) {
 }
 
 export async function registerShift(req: Request, res: Response) {
-  const { driverId, startTime, endTime, date, medium } = req.body;
+  const { driverId, startTime, endTime, date, medium, confirmOvernight } = req.body;
   res.status(201).json(
     await svc.registerShift(req.params.id, {
       driverId, startTime, endTime, date,
-      medium,
+      medium, confirmOvernight,
       actor: getActor(req),
     }),
   );
@@ -55,8 +55,8 @@ export async function payDriver(req: Request, res: Response) {
 }
 
 export async function editShift(req: Request, res: Response) {
-  const { driverId, startTime, endTime, date } = req.body;
-  res.json(await svc.editShift(req.params.id, { driverId, startTime, endTime, date }));
+  const { driverId, startTime, endTime, date, confirmOvernight } = req.body;
+  res.json(await svc.editShift(req.params.id, { driverId, startTime, endTime, date, confirmOvernight }));
 }
 
 export async function removeShift(req: Request, res: Response) {

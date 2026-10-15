@@ -5,6 +5,9 @@ import { MoneyInput } from "../MoneyInput";
 import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
 import type { Branch, Driver, Client } from "@/lib/sd-api";
+import { todayBogota } from "@/lib/format";
+
+const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`);
 
 interface Props {
   open: boolean;
@@ -28,6 +31,12 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
   const [clientId, setClientId] = useState("");
   const [addToDebt, setAddToDebt] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Fecha REAL de entrega (decisión del dueño, 15-oct-2026): puede ser un día ya cerrado.
+  const [deliveryDate, setDeliveryDate] = useState(todayBogota());
+  const [deliveryTime, setDeliveryTime] = useState("");
+  const [dayClosed, setDayClosed] = useState(false);
+  // Una clave por pedido: si la red falla y se reintenta, el servidor no lo duplica.
+  const [idemKey, setIdemKey] = useState(newKey);
 
   useEffect(() => {
     if (!open) return;
@@ -40,15 +49,25 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
 
   useEffect(() => {
     if (!branchId) return;
-    api.getDrivers(branchId).then(setDrivers).catch(() => {});
+    // Solo domiciliarios activos: a uno desactivado no se le registran pedidos nuevos.
+    api.getDrivers(branchId).then(ds => setDrivers(ds.filter(d => d.active))).catch(() => {});
   }, [branchId]);
+
+  useEffect(() => {
+    if (!open || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return;
+    api.getShiftsForDate(deliveryDate).then(s => setDayClosed(s.some(x => x.shift === "close"))).catch(() => setDayClosed(false));
+  }, [open, deliveryDate]);
 
   function reset() {
     setStep(1); setBranchId(""); setDriverId(""); setDeliveryValue(0);
     setOrderNumber(""); setCustomerName(""); setClientId(""); setAddToDebt(false);
+    setDeliveryDate(todayBogota()); setDeliveryTime(""); setIdemKey(newKey());
   }
   function close() { onOpenChange(false); setTimeout(reset, 250); }
 
+  // Una entrega no puede ser futura (el servidor también lo valida).
+  const nowHM = new Date().toLocaleTimeString("en-GB", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit" });
+  const futureTime = !!deliveryTime && deliveryDate === todayBogota() && deliveryTime > nowHM;
   const selectedBranch = branches.find(b => b.id === branchId);
   const selectedDriver = drivers.find(d => d.id === driverId);
   const selectedClient = debtors.find(c => c.id === clientId);
@@ -58,6 +77,8 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
     setSaving(true);
     try {
       await api.createManualOrder({
+        deliveredAt: deliveryTime ? `${deliveryDate}T${deliveryTime}:00-05:00` : deliveryDate,
+        idempotencyKey: idemKey,
         branchId,
         driverId: driverId || undefined,
         deliveryValue,
@@ -143,8 +164,28 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
             placeholder="Nombre del cliente (opcional si no tiene cuenta)"
             className="w-full glass rounded-2xl px-5 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
           />
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Fecha de entrega</span>
+              <input type="date" aria-label="Fecha de entrega" value={deliveryDate} max={todayBogota()}
+                onChange={e => setDeliveryDate(e.target.value)}
+                className="w-full glass rounded-2xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Hora (opcional)</span>
+              <input type="time" aria-label="Hora de entrega" value={deliveryTime}
+                onChange={e => setDeliveryTime(e.target.value)}
+                className="w-full glass rounded-2xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+            </label>
+          </div>
+          {futureTime && <p className="text-xs text-red-500 px-1">La hora de entrega no puede ser posterior a la hora actual ({nowHM}).</p>}
+          {dayClosed && (
+            <p className="text-xs rounded-xl bg-amber-500/10 text-amber-700 dark:text-amber-400 px-3 py-2">
+              🔒 Ese día ya tiene Cierre. El pedido se carga en su fecha real: suma la comisión y aparece en los reportes, pero no cambia el efectivo, el banco ni el conteo del Cierre.
+            </p>
+          )}
           <button
-            disabled={deliveryValue <= 0}
+            disabled={deliveryValue <= 0 || !deliveryDate || deliveryDate > todayBogota() || futureTime}
             onClick={() => setStep(3)}
             className="w-full bg-primary text-primary-foreground font-bold py-4 rounded-2xl shadow-cash disabled:opacity-40"
           >
@@ -228,6 +269,7 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
             <Row label="Sucursal" value={selectedBranch?.name ?? "—"} />
             {selectedDriver && <Row label="Domiciliario" value={selectedDriver.name} />}
             {orderNumber && <Row label="Pedido #" value={orderNumber} />}
+            <Row label="Entregado" value={`${deliveryDate.split("-").reverse().join("/")}${deliveryTime ? ` ${deliveryTime}` : ""}${dayClosed ? " (día cerrado)" : ""}`} />
             <hr className="border-border" />
             <Row label="Valor domicilio" value={formatCOP(deliveryValue)} highlight positive />
             {selectedClient ? (

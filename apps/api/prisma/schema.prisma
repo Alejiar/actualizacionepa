@@ -626,6 +626,11 @@ model HourlyShift {
   driverAmount       Int
   companyAmount      Int
   totalAmount        Int
+  // Tarifa con la que se calculó el turno (decisión del dueño, 15-oct-2026): cambiar la tarifa
+  // del cliente NO recalcula turnos ya registrados. Null solo en turnos viejos cuyo cálculo no
+  // pudo reconstruirse con la tarifa vigente al migrar.
+  driverHourValue    Int?
+  companyHourValue   Int?
   // Etapa 1 — pago al domiciliario
   driverPaid         Boolean   @default(false)
   driverPaidMedium   Medium?

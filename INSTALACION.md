@@ -86,6 +86,8 @@ npm install
 
 ```powershell
 cd C:\cash-buddy-epa\apps\api
+# El .env está en la raíz; la herramienta de Prisma necesita la URL en esta sesión:
+$env:DATABASE_URL = ((Get-Content ..\..\.env | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=','').Trim('"')
 npm run db:deploy   # crea todas las tablas
 npm run db:seed     # crea el usuario administrador inicial
 ```
@@ -139,13 +141,16 @@ Cuando recibas una versión nueva, reemplaza la carpeta del proyecto y ejecuta:
 ```powershell
 cd C:\cash-buddy-epa
 npm install
-cd apps\api && npm run db:deploy
+cd apps\api
+$env:DATABASE_URL = ((Get-Content ..\..\.env | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=','').Trim('"')
+npm run db:deploy
+npx prisma generate
 cd ..\..
 $env:NODE_ENV="production"
 npm run build
 ```
 
-Luego abre `CashBuddy.exe`.
+Antes de `db:deploy`, **haz un respaldo** de la base (pg_dump) y **cierra CashBuddy.exe por completo** y el proceso `node dist\index.js`: si siguen abiertos, `prisma generate` falla con `EPERM` y el backend viejo seguiría en memoria. Luego abre `CashBuddy.exe`.
 
 ---
 

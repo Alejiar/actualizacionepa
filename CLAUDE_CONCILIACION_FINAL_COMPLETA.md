@@ -122,3 +122,83 @@ Un día con Cierre (contado 111.600, diferencia 0) recibe la solicitud "Agregar 
 ## E. Diferencias encontradas
 
 Ninguna sin explicar. La única brecha visible, la hoja CIERRE MES del Excel sin conversiones ni abonos de clientes, está explicada arriba. Agregar una hoja de conciliación al Excel es la decisión P5, pendiente.
+
+## F. Tercera ronda (15-oct-2026): conciliación de las 3 decisiones finales
+
+Copia de la DEMO, migrada a 37. Todo se hizo con clics en la interfaz, el día 15, y cada esperado se calculó a mano antes de mirar el sistema.
+
+### F.1 Libro del día 15 (efectivo / banco)
+
+Apertura: **118.600 / 122.400**.
+
+| # | Registro | Efectivo | Banco | Saldo |
+|---|---|---:|---:|---|
+| 1 | Turno nocturno 23:00–01:00 (2 h × 10.000), pago al domiciliario | −20.000 | | 98.600 / 122.400 |
+| 2 | Turno de B 08:00–10:00 por banco | | −20.000 | 98.600 / 102.400 |
+| 3 | Edición del turno de B a 11:00 con **su** tarifa (+1 h × 10.000) | | −10.000 | 98.600 / 92.400 |
+| 4 | Turno de A 20:00–22:00 con la tarifa nueva (2 h × 12.000) | −24.000 | | 74.600 / 92.400 |
+| 5 | Solicitud aprobada: turno de A hasta la 01:00 (+3 h × 12.000) | −36.000 | | 38.600 / 92.400 |
+| 6 | Nómina "Anticipo UI" | −5.000 | | 33.600 / 92.400 |
+| 7 | Base a A | −10.000 | | 23.600 / 92.400 |
+| 8 | Devolución de base de A por banco | | +5.000 | 23.600 / 97.400 |
+| 9 | Pago de A (5.400 comisión + 4.600 base) | +10.000 | | 33.600 / 97.400 |
+| 10 | Ingreso por banco aplicado a B | | +7.000 | 33.600 / 104.400 |
+| 11 | Cliente por hora abona 50.000 (repartido en 2 turnos: 20.000 + 30.000) | | +50.000 | 33.600 / 154.400 |
+| 12 | Salida por banco con contraparte en efectivo | +30.000 | −30.000 | 63.600 / 124.400 |
+| — | **Cierre** (conteo) | 63.600 | 124.400 | diferencias 0 |
+| 13 | D7: movimiento olvidado, aprobado | −1.000 | | esperado 62.600 / 124.400 |
+
+**Totales del día:**
+- Movimientos (filtro por medio, registro por registro): efectivo −55.000 y banco +2.000. Coincide con el libro: 63.600 − 118.600 = −55.000 y 124.400 − 122.400 = +2.000.
+- El conteo original del Cierre (63.600) no cambia; el esperado corregido es 62.600.
+
+### F.2 Lo que NO movió caja (y no debía)
+
+| Registro | Efecto | Caja |
+|---|---|---|
+| Pedido manual J1, B, 10.000 | B comisión +3.000 | igual |
+| **Pedido manual J9 después del Cierre**, A, 40.000 | A comisión +12.000; resumen del día +12.000 | **igual**; Cierre 63.600 / dif. 0, sin correcciones nuevas |
+| Cambio de tarifa 10.000/5.000 → 12.000/6.000 | Solo los turnos nuevos | igual; deuda 60.000 sin cambio |
+| Aviso nocturno de 23 h, cancelado | nada | igual |
+| Renombrar, desactivar o reactivar un trabajador | nada | igual |
+
+### F.3 Cuentas de domiciliarios y clientes al final
+
+**Demo A:**
+
+| Concepto | Comisión | Crédito | Base |
+|---|---:|---:|---:|
+| Inicial | 5.400 | 0 | 9.600 |
+| Base entregada | | | +10.000 |
+| Base devuelta | | | −5.000 |
+| Pago dividido | −5.400 | | −4.600 |
+| Pedido de 40.000 tras el Cierre | +12.000 | | |
+| **Final** | **12.000** | **0** | **10.000** |
+
+**Demo B:**
+
+| Concepto | Comisión | Crédito | Base |
+|---|---:|---:|---:|
+| Inicial | 0 | 0 | 0 |
+| Pedido de 10.000 | +3.000 | | |
+| Ingreso aplicado de 7.000 | −3.000 | +4.000 | |
+| **Final** | **0** | **4.000** | **0** |
+
+**Cliente por hora:** 30.000 + 30.000 + 15.000 + 36.000 + 54.000 = 165.000; menos el abono de 50.000 = **115.000**.
+
+### F.4 Mes de octubre: tres fuentes independientes
+
+| Concepto | Cálculo a mano | SQL directo | Reporte / Cierre / Excel |
+|---|---:|---:|---:|
+| Pedidos (cantidad / valor) | 28 de la DEMO + 2 = 30 / 312.000 + 50.000 = 362.000 | 30 / 362.000 | 30 / 362.000 |
+| Comisión | 93.600 + 3.000 + 12.000 = 108.600 | 108.600 | 108.600 |
+| Comisiones pendientes / crédito | 72.600 + 12.000 = 84.600 / 4.000 | 84.600 / 4.000 | 84.600 / 4.000 |
+| Bases entregadas / devueltas / pendientes | 30.000 + 10.000 = 40.000 / 20.400 + 9.600 = 30.000 / 10.000 | 40.000 / 30.000 | 40.000 / 30.000 / 10.000 |
+| Gastos / nómina | 10.000 / 5.000 | 10.000 / 5.000 | 10.000 / 5.000 |
+| Clientes (normal + por hora) | 15.000 + 115.000 = 130.000 | 15.000 / 115.000 | 130.000 |
+| Utilidad | 108.600 − 10.000 − 5.000 = 93.600 | — | 93.600 |
+| Capital a dejar (objetivo 300.000) | 300.000 − (10.000 + 84.600 + 15.000 + 115.000) = 75.400 | — | 75.400 (37.700 + 37.700) |
+
+### F.5 Diferencias encontradas
+
+Ninguna sin explicar. El botón de Excel generó 16.574 bytes y el endpoint 16.573: es la marca de tiempo interna del archivo. Las cifras son idénticas.

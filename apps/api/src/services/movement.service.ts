@@ -21,6 +21,12 @@ export async function addMovement(input: CreateMovementRequest): Promise<Movemen
   return moneyTransaction(async () => {
   assertMoney(input.amount);
   validateExpense(input);
+  if (input.workerId) {
+    // Un trabajador desactivado conserva su historial, pero no recibe pagos nuevos.
+    const worker = await prisma.worker.findUnique({ where: { id: input.workerId }, select: { active: true } });
+    if (!worker) throw badRequest("Trabajador no encontrado.");
+    if (!worker.active) throw badRequest("El trabajador está desactivado. Reactívalo antes de registrarle pagos.");
+  }
   const createdAt = await financialNow();
   // Solo movimientos CONFIRMADOS afectan la caja; esos deben caer en un período abierto.
   // Un pendiente se valida al aprobarse (approveMovement).

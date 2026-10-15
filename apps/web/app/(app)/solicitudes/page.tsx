@@ -38,6 +38,7 @@ const FIELD_LABELS: Record<string, string> = {
   endTime: "Hora salida",
   date: "Fecha",
   driverName: "Domiciliario",
+  confirmOvernight: "Turno que cruza medianoche",
 };
 
 export default function SolicitudesPage() {
@@ -215,7 +216,11 @@ export default function SolicitudesPage() {
               ) : (
               <div className="glass rounded-2xl p-4 space-y-2">
                 <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Cambios solicitados</div>
-                {Object.entries(r.changes).filter(([field]) => !field.endsWith("Id")).map(([field, ch]) => (
+                {Object.entries(r.changes).filter(([field]) => !field.endsWith("Id")).map(([field, ch]) => field === "confirmOvernight" ? (
+                  <div key={field} className="text-xs rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-400 px-2 py-1">
+                    🌙 Quien solicitó confirmó que el turno termina al día siguiente.
+                  </div>
+                ) : (
                   <div key={field} className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground capitalize">{FIELD_LABELS[field] ?? field}</span>
                     <span className="flex items-center gap-2">

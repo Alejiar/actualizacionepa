@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
 import { Avatar } from "@/components/Avatar";
 import { formatCOP, todayBogota } from "@/lib/format";
-import { Plus, Bike, Building2, ChevronDown, ChevronUp, DollarSign, Loader2 } from "lucide-react";
+import { Plus, Bike, Building2, ChevronDown, ChevronUp, DollarSign, Loader2, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { useAuth } from "@/lib/auth";
+import type { Worker } from "@cash-buddy/shared";
 import * as api from "@/lib/sd-api";
 import type { DriverStatement } from "@/lib/sd-api";
 import { PayrollWizard } from "@/components/wizards/PayrollWizard";
@@ -13,7 +16,25 @@ import { DriverPaymentWizard } from "@/components/wizards/DriverPaymentWizard";
 type Tab = "administrativos" | "domiciliarios";
 
 export default function WorkersPage() {
-  const { state, addWorker, updateWorker } = useStore();
+  const { state, addWorker, updateWorker, removeWorker } = useStore();
+  const { user } = useAuth();
+  // Renombrar y activar/desactivar: cualquier usuario (como antes). Eliminar: solo administrador
+  // (el servidor también lo exige y además lo impide si el trabajador tiene historial).
+  const isAdmin = user?.role === "admin";
+  const [renaming, setRenaming] = useState<Worker | null>(null);
+
+  async function toggleWorker(w: Worker) {
+    const msg = w.active
+      ? `¿Desactivar a "${w.name}"? Conserva sus pagos e historial, pero no podrá recibir pagos nuevos hasta reactivarlo.`
+      : `¿Reactivar a "${w.name}"?`;
+    if (!confirm(msg)) return;
+    if (await updateWorker(w.id, { active: !w.active })) toast.success(w.active ? `"${w.name}" desactivado` : `"${w.name}" reactivado`);
+  }
+
+  async function deleteWorker(w: Worker) {
+    if (!confirm(`¿Eliminar a "${w.name}" definitivamente? Solo es posible si no tiene pagos ni movimientos; si los tiene, desactívalo.`)) return;
+    if (await removeWorker(w.id)) toast.success(`"${w.name}" eliminado`);
+  }
   const [tab, setTab] = useState<Tab>("administrativos");
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
@@ -144,8 +165,13 @@ export default function WorkersPage() {
                       </div>
                     )}
 
+                    <button onClick={() => setRenaming(w)} title={`Renombrar ${w.name}`} aria-label={`Renombrar ${w.name}`}
+                      className="p-1.5 rounded-lg text-muted-foreground hover:bg-secondary hover:text-primary transition">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
                     <button
-                      onClick={() => updateWorker(w.id, { active: !w.active })}
+                      onClick={() => toggleWorker(w)}
+                      title={w.active ? "Desactivar" : "Reactivar"}
                       className={`text-xs px-2.5 py-1 rounded-full font-bold ${w.active ? "bg-cash-soft text-cash" : "bg-secondary text-muted-foreground"}`}
                     >
                       {w.active ? "Activo" : "Inactivo"}
@@ -169,12 +195,22 @@ export default function WorkersPage() {
                           .filter(m => m.workerId === w.id && (m.category === 15 || m.category === 18)).length
                       )} />
                     </div>
-                    <button
-                      onClick={() => setPayrollTarget(w.id)}
-                      className="w-full flex items-center justify-center gap-2 py-3 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition"
-                    >
-                      <DollarSign className="h-4 w-4" /> Registrar pago
-                    </button>
+                    {w.active ? (
+                      <button
+                        onClick={() => setPayrollTarget(w.id)}
+                        className="w-full flex items-center justify-center gap-2 py-3 bg-primary text-primary-foreground rounded-xl font-bold hover:opacity-90 transition"
+                      >
+                        <DollarSign className="h-4 w-4" /> Registrar pago
+                      </button>
+                    ) : (
+                      <p className="text-xs text-center text-muted-foreground">Trabajador desactivado: conserva su historial; reactívalo para registrarle pagos.</p>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => deleteWorker(w)}
+                        className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-bold border border-red-500/30 text-red-500 rounded-xl hover:bg-red-500/10 transition">
+                        <Trash2 className="h-3.5 w-3.5" /> Eliminar trabajador (solo sin historial)
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -259,6 +295,17 @@ export default function WorkersPage() {
         </div>
       )}
 
+      {renaming && (
+        <RenameWorkerModal
+          worker={renaming}
+          linkedToShipday={renaming.role === "domiciliario" && !!findDriver(renaming.name)}
+          onClose={() => setRenaming(null)}
+          onSave={async (name) => {
+            if (await updateWorker(renaming.id, { name })) { toast.success(`Nombre actualizado: ${name}`); setRenaming(null); }
+          }}
+        />
+      )}
+
       {payrollTarget && (
         <PayrollWizard open={true} onOpenChange={v => { if (!v) setPayrollTarget(null); }} presetWorkerId={payrollTarget} date={today} />
       )}
@@ -283,6 +330,37 @@ export default function WorkersPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function RenameWorkerModal({ worker, linkedToShipday, onClose, onSave }: {
+  worker: Worker; linkedToShipday: boolean; onClose: () => void; onSave: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(worker.name);
+  const [saving, setSaving] = useState(false);
+  const clean = name.trim().replace(/\s+/g, " ");
+  const invalid = !clean || clean.length > 80 || clean === worker.name;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="glass-strong rounded-3xl p-6 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+        <h3 className="font-black text-lg">Renombrar trabajador</h3>
+        <p className="text-xs text-muted-foreground">Nombre actual: <b>{worker.name}</b>. Es el mismo trabajador: sus pagos e historial se conservan.</p>
+        <input value={name} onChange={e => setName(e.target.value)} autoFocus maxLength={80} aria-label="Nuevo nombre"
+          className="w-full glass rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-primary/40" />
+        {linkedToShipday && (
+          <p className="text-[11px] text-amber-600">Este domiciliario se enlaza con Shipday por nombre. Si el nombre nuevo deja de coincidir con el de Shipday, aquí dejará de verse su estado de cuenta (los pedidos y la deuda no cambian).</p>
+        )}
+        {!clean && <p className="text-xs text-red-500">El nombre no puede quedar vacío.</p>}
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={onClose} className="py-3 rounded-xl border border-border font-bold hover:bg-secondary transition">Cancelar</button>
+          <button disabled={invalid || saving}
+            onClick={async () => { setSaving(true); await onSave(clean); setSaving(false); }}
+            className="py-3 rounded-xl bg-primary text-primary-foreground font-bold disabled:opacity-40">
+            {saving ? "Guardando…" : "Guardar nombre"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

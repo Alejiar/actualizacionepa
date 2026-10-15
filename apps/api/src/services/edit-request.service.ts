@@ -12,7 +12,7 @@ import { assertOpenPeriod, assertOpenInstant, movementEffectiveAt, runAsApproved
 import { getRawExpectedEndOfDay } from "./shipday-dashboard.service";
 import { addMovement } from "./movement.service";
 import { assertMoney } from "../lib/money-validation";
-import { deleteShift as deleteHourlyShift, editShift as editHourlyShift, deleteHourlyBankTx } from "./hourly-client.service";
+import { deleteShift as deleteHourlyShift, editShift as editHourlyShift, deleteHourlyBankTx, assertShiftTimes } from "./hourly-client.service";
 
 type ChangeMap = Record<string, { old: string; new: string }>;
 
@@ -24,7 +24,8 @@ const editable: Record<string, string[]> = {
   ClientDebtPayment: [], Conversion: ["amount","notes"],
   ShiftClose: ["totalExpected","totalCounted","bankExpected","bankCounted","receivedBy","handedBy","notes"],
   MonthlyClose: ["initialCash","initialBank"],
-  HourlyShift: ["driverId","driverName","startTime","endTime","date"],
+  // confirmOvernight: quien pide el cambio confirmó un turno que cruza medianoche (solo "true").
+  HourlyShift: ["driverId","driverName","startTime","endTime","date","confirmOvernight"],
 };
 const numericFields = new Set(["amount","deliveryValue","cashAmount","bankAmount","totalExpected","totalCounted","bankExpected","bankCounted","initialCash","initialBank"]);
 // Tipos cuya ELIMINACIÓN está implementada (con reversión íntegra de sus efectos). Cualquier
@@ -47,6 +48,19 @@ function validateChanges(entity: string, changes: ChangeMap, deleting = false) {
   }
 }
 
+
+/** Un turno que pasa a cruzar medianoche exige la confirmación explícita desde la solicitud. */
+async function validateHourlyShiftRequest(entityId: string, changes: ChangeMap) {
+  const confirm = changes.confirmOvernight;
+  if (confirm && confirm.new !== "true") throw badRequest("Valor inválido para confirmOvernight.");
+  if (!changes.startTime && !changes.endTime) return;
+  const shift = await prisma.hourlyShift.findUnique({ where: { id: entityId }, include: { hourlyClient: true } });
+  if (!shift) throw badRequest("Turno no encontrado");
+  const rates = shift.driverHourValue != null && shift.companyHourValue != null
+    ? { driverHourValue: shift.driverHourValue, companyHourValue: shift.companyHourValue } : shift.hourlyClient;
+  assertShiftTimes(changes.startTime?.new ?? shift.startTime, changes.endTime?.new ?? shift.endTime,
+    changes.date?.new ?? shift.date, rates, confirm?.new === "true");
+}
 
 export async function listRequests(status?: "pending" | "approved" | "rejected") {
   return prisma.editRequest.findMany({
@@ -107,6 +121,7 @@ export async function createRequest(data: {
   }
   validateChanges(data.entityType,data.changes,data.requestType === "delete");
   if (!data.reason.trim()) throw badRequest("Debes indicar el motivo");
+  if (data.entityType === "HourlyShift" && data.requestType !== "delete") await validateHourlyShiftRequest(data.entityId, data.changes);
   const requestType = data.requestType ?? "edit";
   if (requestType === "edit" && Object.keys(data.changes).length === 0) {
     throw badRequest("Debes especificar al menos un campo a cambiar");
@@ -454,6 +469,7 @@ async function applyChanges(entityType: string, entityId: string, changes: Chang
         startTime: newValues.startTime != null ? String(newValues.startTime) : undefined,
         endTime: newValues.endTime != null ? String(newValues.endTime) : undefined,
         date: newValues.date != null ? String(newValues.date) : undefined,
+        confirmOvernight: String(newValues.confirmOvernight) === "true",
       });
       break;
     default:

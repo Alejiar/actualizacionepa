@@ -1,5 +1,5 @@
 /**
- * Ejecuta por API los escenarios E3–E14 de GUIA_MANUAL_PRUEBAS_EPA.md sobre una COPIA de la DEMO
+ * Ejecuta por API los escenarios E3–E18 de GUIA_MANUAL_PRUEBAS_EPA.md sobre una COPIA de la DEMO
  * (BD temporal `cashbuddy_claude_guia` restaurada de un respaldo) y comprueba cada saldo escrito
  * en la guía. Nunca contra `cashbuddy_demo` ni `cashbuddy`.
  */
@@ -59,14 +59,58 @@ async function main() {
   assert.deepEqual([rep.totalSales, rep.expenses.total, rep.bases.previous, rep.bases.given, rep.bases.returned, rep.bases.diff, rep.commission.pending, rep.transfers.diff, rep.clientDebt.balance], [96600, 20000, 0, 40000, 35000, 5000, 72600, 0, 30000]);
   out.push("OK E12 reporte: ventas 96.600, gastos 20.000, bases 0+40.000−35.000=5.000, comisiones 72.600, contrapartes 0, clientes 30.000");
   const s = await ok(`/days/${today}/summary`, "GET", undefined, admin); assert.equal(s.finalTotal, 284000); assert.equal(s.initialTotal + s.ingresos - s.egresos, s.finalTotal); out.push("OK E12 Historial 284.000");
-  const close = await ok("/shifts", "POST", { date: today, shift: "close", denominations: { bills: [{ value: 1, qty: 136600 }], coins: [] }, bankCounted: 147400 }, admin);
-  assert.deepEqual([close.difference, close.bankDifference], [0, 0]); out.push("OK E13 cierre 136.600 / 147.400, diferencias 0");
+  // E13 — tarifas: el turno ya registrado no cambia.
+  assert.equal((await api(`/hourly-clients/${hc.id}`, "PATCH", { driverHourValue: 0, companyHourValue: 0 })).status, 400);
+  await ok(`/hourly-clients/${hc.id}`, "PATCH", { driverHourValue: 12000, companyHourValue: 6000 });
+  const e11 = (await ok("/hourly-shifts")).find((x: any) => x.hourlyClientId === hc.id && x.startTime === "08:00" && x.endTime === "09:00" && x.date === today);
+  assert.equal(e11.totalAmount, 15000); await expect("E13 tarifas (caja igual)", 136600, 147400);
+  // E14 — turno que cruza medianoche.
+  const warn = await api(`/hourly-clients/${hc.id}/shifts`, "POST", { driverId: B.id, startTime: "10:00", endTime: "09:00", medium: "cash" });
+  assert.equal(warn.status, 409); assert.match(warn.body.error, /termina mañana .* 23 horas/);
+  assert.deepEqual([warn.body.details.driverAmount, warn.body.details.companyAmount, warn.body.details.totalAmount], [276000, 138000, 414000]);
+  await expect("E14 aviso 23 h sin guardar", 136600, 147400);
+  const w2 = await api(`/hourly-clients/${hc.id}/shifts`, "POST", { driverId: B.id, startTime: "22:00", endTime: "00:00", medium: "cash" });
+  assert.deepEqual([w2.body.details.driverAmount, w2.body.details.companyAmount, w2.body.details.totalAmount], [24000, 12000, 36000]);
+  await ok(`/hourly-clients/${hc.id}/shifts`, "POST", { driverId: B.id, startTime: "22:00", endTime: "00:00", medium: "cash", confirmOvernight: true });
+  assert.equal((await api(`/hourly-clients/${hc.id}/shifts`, "POST", { driverId: B.id, startTime: "11:00", endTime: "11:00", medium: "cash" })).status, 400);
+  assert.equal((await api(`/hourly-clients/${hc.id}/shifts`, "POST", { driverId: B.id, startTime: "22:00", endTime: "00:00", medium: "cash", confirmOvernight: true })).status, 409);
+  assert.equal((await ok("/hourly-clients")).find((h: any) => h.id === hc.id).pendingDebt, 36000);
+  await expect("E14 turno nocturno confirmado", 112600, 147400);
+  // E15 — trabajadores.
+  const wk = await ok("/workers", "POST", { name: "Auxiliar prueba", role: "administrativo", active: true });
+  await ok("/movements", "POST", { date: today, category: 15, type: "egreso", medium: "cash", amount: 5000, workerId: wk.id, description: "E15" });
+  await expect("E15 nómina", 107600, 147400);
+  await ok(`/workers/${wk.id}`, "PATCH", { name: "Auxiliar renombrado" });
+  assert.equal((await api(`/workers/${wk.id}`, "PATCH", { name: "" })).status, 400);
+  await ok(`/workers/${wk.id}`, "PATCH", { active: false });
+  assert.equal((await api("/movements", "POST", { date: today, category: 15, type: "egreso", medium: "cash", amount: 1000, workerId: wk.id })).status, 400);
+  assert.equal((await api(`/workers/${wk.id}`, "DELETE", undefined, oper)).status, 403);
+  assert.equal((await api(`/workers/${wk.id}`, "DELETE", undefined, admin)).status, 409);
+  await ok(`/workers/${wk.id}`, "PATCH", { active: true });
+  assert.equal(await p.movement.count({ where: { workerId: wk.id } }), 1); out.push("OK E15 renombrar/desactivar con historial conservado");
+  // E16 — Cierre.
+  const close = await ok("/shifts", "POST", { date: today, shift: "close", denominations: { bills: [{ value: 1, qty: 107600 }], coins: [] }, bankCounted: 147400 }, admin);
+  assert.deepEqual([close.difference, close.bankDifference], [0, 0]); out.push("OK E16 cierre 107.600 / 147.400, diferencias 0");
   assert.equal((await api("/bank-transactions", "POST", { type: "ingreso", medium: "cash", amount: 1, description: "tras cierre", noCounterpart: true })).status, 409);
+  // E17 — D7.
   const req = await ok("/edit-requests", "POST", { requestType: "create", entityType: "BankTransaction", entityId: "nuevo", entityLabel: "", changes: { date: today, type: "egreso", medium: "cash", amount: 1000, description: "Olvido de prueba" }, reason: "Prueba D7" });
-  await ok(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin); await expect("E14 corregido", 135600, 147400);
+  await ok(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin); await expect("E17 corregido", 106600, 147400);
   const sc = await p.shiftClose.findFirstOrThrow({ where: { date: today, shift: "close" } });
-  assert.deepEqual([sc.totalCounted, sc.difference, (sc.corrections as any[]).length, (sc.corrections as any[])[0].cashDelta], [136600, 0, 1, -1000]);
-  assert.equal((await ok(`/days/${today}/summary`, "GET", undefined, admin)).cajaCuadrada, true); out.push("OK E14 conteo original 136.600 dif 0; corrección −1.000; semáforo verde");
+  assert.deepEqual([sc.totalCounted, sc.difference, (sc.corrections as any[]).length, (sc.corrections as any[])[0].cashDelta], [107600, 0, 1, -1000]);
+  assert.equal((await ok(`/days/${today}/summary`, "GET", undefined, admin)).cajaCuadrada, true); out.push("OK E17 conteo original 107.600 dif 0; corrección −1.000; semáforo verde");
+  // E18 — pedido manual después del Cierre.
+  await ok(`/branches/${fict.id}`, "PATCH", { active: true }, admin);
+  const comBefore = (await ok(`/days/${today}/summary`, "GET", undefined, admin)).comision;
+  await ok("/sd/orders/manual", "POST", { branchId: fict.id, driverId: A.id, deliveryValue: 40000, orderNumber: "POST-CIERRE", deliveredAt: today });
+  assert.equal((await api("/sd/orders/manual", "POST", { branchId: fict.id, driverId: A.id, deliveryValue: 40000, orderNumber: "POST-CIERRE", deliveredAt: today })).status, 409);
+  await ok(`/branches/${fict.id}`, "PATCH", { active: false }, admin);
+  A = await drv("Domiciliario Demo A"); assert.deepEqual([A.pendingDebt, A.basePending], [12000, 5000]);
+  await expect("E18 pedido tras el Cierre (caja igual)", 106600, 147400);
+  const s18 = await ok(`/days/${today}/summary`, "GET", undefined, admin);
+  assert.equal(s18.comision, comBefore + 12000); assert.equal(s18.cajaCuadrada, true);
+  assert.equal((await p.shiftClose.findFirstOrThrow({ where: { date: today, shift: "close" } })).totalCounted, 107600);
+  assert.equal((await ok(`/sd/report/${month}`, "GET", undefined, admin)).totalSales, 108600);
+  out.push("OK E18 comisión A 12.000, ventas 108.600, Cierre intacto");
   console.log(out.join("\n")); console.log("GUIA OK");
   await p.$disconnect();
 }

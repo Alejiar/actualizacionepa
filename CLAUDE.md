@@ -270,6 +270,11 @@ reintentar, y vuelve a abrirlo al terminar.
 - El arranque verifica todas las migraciones. Si faltan, aborta sin sembrar datos.
   En una instalación/actualización, ejecutar `npm run db:deploy -w @cash-buddy/api`
   y generar Prisma antes de iniciar. Nunca aplicar solo la primera migración.
+  **El `.env` vive en la raíz y la CLI de Prisma no lo lee desde `apps/api`** (falla con
+  "Environment variable not found: DATABASE_URL"). Antes de `db:deploy`/`prisma generate`, en
+  PowerShell dentro de `apps\api`:
+  `$env:DATABASE_URL = ((Get-Content ..\..\.env | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=','').Trim('"')`
+  (probado el 15-oct-2026 al aplicar la migración 37 a la DEMO).
 - No cambiar la fórmula de bases del mes ni la política de reversiones históricas
   sin una decisión explícita del dueño.
 - Autenticación (oct-2026): `requireAuth` lee rol y estado del usuario en la BD en cada
@@ -301,8 +306,28 @@ reintentar, y vuelve a abrirlo al terminar.
 - **Pedidos de Shipday (decisión del dueño, 14-oct-2026):** un pedido entregado después del
   Cierre de su día se carga en su día (`assertOrderPeriodOpen`): un pedido no mueve caja. Solo
   lo bloquea que SU MES (o uno posterior) esté cerrado — por mes del pedido, no por el instante
-  del cierre, para no perder pedidos del mes abierto. Los pedidos manuales siguen la guardia de
-  dinero (rechazo tras el Cierre).
+  del cierre, para no perder pedidos del mes abierto.
+- **Pedidos manuales (decisión del dueño, 15-oct-2026):** misma regla que Shipday. Se registran con
+  su fecha REAL de entrega (`deliveredAt`: día o instante con zona, nunca futuro) aunque el día
+  tenga Cierre, si su mes sigue abierto (`assertOrderPeriodOpen`). Suman comisión
+  (`applyDebtDelta`) y `DailyDriverStat` del día REAL; no tocan caja ni el conteo del Cierre (una
+  deuda de cliente vinculada es FIADA, sin medio). `idempotencyKey` hace que un reintento devuelva
+  el mismo pedido sin duplicar comisión; mismo número + sucursal + día → 409; domiciliario o
+  sucursal desactivados → 400. Lo que SÍ mueve dinero sigue con la guardia D7.
+- **Turnos por hora que cruzan medianoche (decisión del dueño, 15-oct-2026):** salida < entrada =
+  termina al día siguiente; se permite SOLO con `confirmOvernight: true` (sin ella → 409 con
+  `details` de duración y valores). Entrada = salida → 400. Sin límite máximo de horas (el dueño
+  no lo definió; no lo inventes). El mismo turno (cliente, domiciliario, día, horas) no se registra
+  dos veces. Una solicitud de edición que pasa a nocturno debe traer `confirmOvernight` "true".
+- **Tarifa congelada por turno (migración 37, `HourlyShift.driverHourValue/companyHourValue`):**
+  cambiar la tarifa del cliente NO re-precia turnos ni deudas existentes; `editShift` recalcula con
+  la tarifa del TURNO. Turnos viejos sin tarifa guardada solo usan la vigente si reproduce
+  exactamente sus montos; si no, se exige eliminarlo y registrarlo de nuevo.
+- **Trabajadores:** renombrar/desactivar conserva el mismo `id` y su historial (pagos por
+  `workerId`). Un trabajador desactivado no recibe pagos nuevos (400). `DELETE /workers/:id` (solo
+  admin) se rechaza con 409 si tiene movimientos: nunca borres historial financiero.
+- Permisos: se conservaron los existentes (editar tarifas y trabajadores: cualquier usuario
+  autenticado; eliminar trabajador: admin). Restringirlos es decisión del dueño.
 - Capital: el ancla es el último `MonthlyClose` con `closedAt <=` la fecha consultada, nunca
   "el último" a secas. `closeMonth` guarda `snapshot.capitalAnterior`; no lo quites.
 - Contrapartes (`pairWith`): exigen original existente, sin pareja previa, signo opuesto e

@@ -118,6 +118,98 @@ Decisiones que siguen abiertas:
 - P4: utilidad por hora.
 - P5: hoja de conciliación en el Excel.
 - P6: comportamiento del servidor al cerrar la app.
-- Pedidos manuales después del Cierre: hoy se rechazan, como el resto del dinero.
+- ~~Pedidos manuales después del Cierre~~: decidido el 15-oct-2026 (ver §9).
 
 Commits: `bea002a` (código y pruebas) y el documental. Sin push.
+
+## 9. Tercera ronda: las 3 decisiones finales (15-oct-2026)
+
+### 9.1 Qué se implementó y por qué (causas raíz)
+
+| Decisión | Causa raíz del comportamiento anterior | Implementación |
+|---|---|---|
+| **1. Pedido manual tras el Cierre** | `manualCreate` usaba la guardia de **dinero** (`assertOpenInstant`), así que un pedido del día cerrado daba 409 aunque no mueve caja. Además, `DailyDriverStat` y la deuda fiada del cliente se fechaban con "hoy" | Guardia de **pedidos** (`assertOrderPeriodOpen`, igual que Shipday). Fecha real `deliveredAt` (día o instante, nunca futuro). Estadística y deuda fiada en el día real. `idempotencyKey` (el reintento devuelve el mismo pedido). Mismo número + sucursal + día → 409. Domiciliario desactivado → 400. Asistente con fecha y hora, aviso de día cerrado y bloqueo de hora futura |
+| **2. Turno que cruza medianoche** | `computeMinutes` sumaba 24 h en silencio cuando la salida era menor que la entrada | `assertShiftTimes`: sin `confirmOvernight: true` → 409 con `details` (duración, fechas y valores). Entrada = salida → 400. Duplicado exacto → 409. Cliente o domiciliario desactivado → 400. La interfaz muestra el resumen (inicio y fin con fecha, horas, domiciliario, empresa, total) con **Cancelar** y **Sí, registrar**. Las solicitudes de edición llevan la confirmación y Solicitudes la muestra |
+| **3a. Editar tarifas** | La API existía sin pantalla. **Riesgo encontrado:** `editShift` recalculaba con la tarifa **vigente** del cliente, así que cambiar la tarifa habría re-preciado turnos viejos al corregirlos | Migración 37: tarifa congelada en cada turno (respaldo con backfill solo cuando reproduce exactamente los montos). `editShift` usa la tarifa del turno. Formulario «Editar tarifas» con revisión y confirmación |
+| **3b/3c. Renombrar / desactivar trabajadores** | No había formulario de nombre. Desactivar no impedía pagos nuevos. `DELETE` borraba con `SetNull` y se perdía la nómina asociada | Nombre validado (limpio, ≤ 80, sin repetir), mismo `id`. Un desactivado no recibe pagos (400). `DELETE` (admin) con historial → 409. Interfaz: lápiz, Activo/Inactivo con confirmación, «Eliminar (solo sin historial)», aviso del vínculo con Shipday por nombre |
+| Procedimiento | `npm run db:deploy` (INSTALACION/CLAUDE) falla en este PC: el `.env` está en la raíz y la CLI de Prisma no lo lee | Comando de PowerShell documentado y **probado** al migrar la DEMO |
+
+**Permisos:** se **conservó** el modelo existente. Tarifas y trabajadores los edita cualquier usuario autenticado; eliminar un trabajador es solo del admin. Un primer diseño restringía todo al admin, pero las pruebas existentes (claude-12 F02, Codex I07, cobertura WRK-01/HOUR-01) fijan ese permiso del operador: restringirlo habría sido inventar una regla.
+
+### 9.2 Archivos modificados
+
+**API:**
+- `controllers/order.controller.ts`
+- `services/hourly-client.service.ts`
+- `controllers/hourly-client.controller.ts`
+- `services/edit-request.service.ts`
+- `services/worker.service.ts`
+- `services/movement.service.ts`
+
+**Esquema:**
+- `prisma/schema.prisma`
+- `prisma/migrations/20261016090000_hourly_shift_rate_snapshot/`
+
+**Web:**
+- `components/wizards/ManualOrderWizard.tsx`
+- `app/(app)/clientes/HourlyClientsTab.tsx`
+- `app/(app)/trabajadores/page.tsx`
+- `app/(app)/solicitudes/page.tsx`
+- `lib/sd-api.ts`
+- `lib/store.tsx`
+
+**Pruebas:**
+- `tests/claude-decisiones-finales.ts` (nueva, 25 casos)
+- `tests/guia-manual-validacion.ts` (E13–E18)
+- `tests/codex-definitive.ts` (LOCK12 y HOUR02, por las decisiones; ver la matriz §9.4)
+
+**Documentos:**
+- `CLAUDE.md`
+- `INSTALACION.md`
+- `GUIA_MANUAL_PRUEBAS_EPA.md`
+- `CLAUDE_MATRIZ_COBERTURA_TOTAL_EPA.md`
+- `CLAUDE_CONCILIACION_FINAL_COMPLETA.md`
+- `CLAUDE_PC_PRUEBAS_OPERATIVO.md`
+- este archivo
+
+### 9.3 Resultados
+
+- **API:** 25 / 25 de las decisiones.
+- **Regresión completa:** 12 de 12 grupos con salida 0, incluidas las 181 pruebas anteriores, Codex 75 / 75 y las 124 rutas al 100 %.
+- **Guía manual:** E2–E18 con todas las cifras validadas.
+- **Interfaz con clics:** las 3 decisiones, más dos recorridos financieros; las cifras coinciden con el cálculo a mano y con SQL.
+- **Barrido:** 20 pantallas × 2 roles, sin errores.
+- **Compilación:** tipos de API y web sin errores; compilación de producción correcta.
+
+Detalle en `CLAUDE_MATRIZ_COBERTURA_TOTAL_EPA.md` §9 y `CLAUDE_CONCILIACION_FINAL_COMPLETA.md` §F.
+
+### 9.4 Estado de la DEMO y de Git
+
+**DEMO:**
+- Respaldo previo: `backups/cashbuddy_demo_pre_decisiones_20261015_043234.dump`.
+- Migración 37 aplicada (37/37).
+- El turno existente recibió su tarifa 10.000 / 5.000.
+- Saldos 118.600 / 122.400 sin cambios.
+- CashBuddy.exe reabierto con la compilación nueva.
+
+**Git:** commits locales en `claude/entrega-final`, **sin push**. Se excluyen los archivos ajenos:
+- `apps/api/package.json`
+- `apps/web/tsconfig.tsbuildinfo`
+- `AUDITORIA_CLAUDE_*.md`
+- `CONTEXTO_AUDITORIA.md`
+- `apps/api/scripts/simulate-3months.ts`
+
+### 9.5 Riesgos restantes
+
+1. **Producción necesita la migración 37** antes de abrir la versión nueva; sin ella, el arranque se detiene a propósito. Pasos:
+   - respaldo;
+   - cerrar CashBuddy.exe y `node`;
+   - cargar `DATABASE_URL`;
+   - `db:deploy`;
+   - `prisma generate`;
+   - compilar;
+   - abrir.
+2. **Turnos de producción sin tarifa reconstruible** quedarán en NULL. Editar sus horas pedirá eliminarlos y registrarlos de nuevo, a propósito, para no re-preciarlos en silencio.
+3. **Duplicados:** se rechaza el pedido manual con el **mismo número** en la misma sucursal y día. Uno sin número solo se protege con la clave de reintento del asistente.
+4. **Vínculo trabajador–Shipday por nombre:** al renombrar un trabajador domiciliario se pierde la vista de su estado de cuenta si deja de coincidir con Shipday. La interfaz lo advierte; los pedidos y la deuda no cambian.
+5. **Ventana de CashBuddy.exe:** no se verificó visualmente.

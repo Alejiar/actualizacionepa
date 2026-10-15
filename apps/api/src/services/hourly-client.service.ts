@@ -1,5 +1,5 @@
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { badRequest, notFound } from "../lib/errors";
+import { badRequest, conflict, notFound } from "../lib/errors";
 import { assertMoney } from "../lib/money-validation";
 import { todayBogota } from "../lib/date-range";
 import { assertCalendarDate, assertOpenPeriod, assertOpenInstant, financialNow } from "../lib/period-guard";
@@ -36,6 +36,35 @@ function computeAmounts(rates: { driverHourValue: number; companyHourValue: numb
   const driverAmount = Math.round((rates.driverHourValue * minutes) / 60);
   const companyAmount = totalAmount - driverAmount;
   return { driverAmount, companyAmount, totalAmount };
+}
+
+/**
+ * Turno que cruza medianoche (decisión del dueño, 15-oct-2026): se permite, pero NUNCA en
+ * silencio. Si la salida es anterior a la entrada, el turno termina al día siguiente y quien lo
+ * registra debe confirmarlo explícitamente (`confirmOvernight: true`); sin esa confirmación se
+ * responde 409 con la duración y los valores para mostrarlos. Entrada = salida (0 min) no es
+ * un turno de 24 h: se rechaza. No hay límite máximo de horas (el dueño no lo definió).
+ */
+export function assertShiftTimes(
+  start: string, end: string, date: string,
+  rates: { driverHourValue: number; companyHourValue: number },
+  confirmOvernight: unknown,
+) {
+  const minutes = computeMinutes(start, end);
+  if (!Number.isFinite(minutes)) throw badRequest("Horas inválidas. Usa el formato HH:MM (24h)");
+  if (minutes <= 0) throw badRequest("La hora de salida no puede ser igual a la de entrada.");
+  const overnight = start.trim().padStart(5, "0") > end.trim().padStart(5, "0");
+  const amounts = computeAmounts(rates, minutes);
+  if (overnight && confirmOvernight !== true) {
+    const next = new Date(new Date(date + "T12:00:00-05:00").getTime() + 86_400_000);
+    const endDate = next.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const hours = Math.floor(minutes / 60), rest = minutes % 60;
+    const duration = `${hours} hora${hours === 1 ? "" : "s"}${rest ? ` y ${rest} min` : ""}`;
+    const err = conflict(`Este turno termina mañana (${endDate} ${end.trim()}) y tiene una duración de ${duration}. Confírmalo para registrarlo.`);
+    err.details = { code: "OVERNIGHT_CONFIRMATION_REQUIRED", overnight: true, startDate: date, startTime: start.trim(), endDate, endTime: end.trim(), minutes, ...amounts };
+    throw err;
+  }
+  return { minutes, overnight, ...amounts };
 }
 
 // ─── Desglose de saldos por cliente ───────────────────────────────────────────
@@ -128,6 +157,7 @@ export async function updateHourlyClient(
   return moneyTransaction(async () => {
     const current = await prisma.hourlyClient.findUnique({ where: { id } });
     if (!current) throw notFound("Cliente no encontrado");
+    // Cambiar la tarifa solo afecta turnos NUEVOS: cada turno guarda la tarifa con que se valoró.
     if (data.active !== undefined && typeof data.active !== "boolean") throw badRequest("Estado inválido");
     const name = data.name !== undefined ? validateName(data.name) : undefined;
     // Se valida el par RESULTANTE (la tarifa no enviada conserva su valor actual).
@@ -164,6 +194,17 @@ export async function deleteHourlyClient(id: string) {
 
 // ─── Turnos ───────────────────────────────────────────────────────────────────
 
+/** Tarifa con la que se valoró el turno. Turnos anteriores a la migración sin tarifa guardada:
+ *  solo se acepta la vigente si reproduce exactamente sus montos; si no, no se adivina. */
+function shiftRates(shift: { minutes: number; driverAmount: number; totalAmount: number; driverHourValue: number | null; companyHourValue: number | null; hourlyClient: { driverHourValue: number; companyHourValue: number } }) {
+  if (shift.driverHourValue != null && shift.companyHourValue != null) {
+    return { driverHourValue: shift.driverHourValue, companyHourValue: shift.companyHourValue };
+  }
+  const current = computeAmounts(shift.hourlyClient, shift.minutes);
+  if (current.driverAmount === shift.driverAmount && current.totalAmount === shift.totalAmount) return shift.hourlyClient;
+  throw badRequest("La tarifa del cliente cambió después de este turno y no se guardó la original. Para corregirlo, elimina el turno y regístralo de nuevo.");
+}
+
 async function assertServiceDate(date: unknown) {
   assertCalendarDate(date, "El turno");
   if (date > todayBogota()) throw badRequest("La fecha del servicio no puede ser futura.");
@@ -187,7 +228,7 @@ async function assertShiftOpen(shift: { id: string; date: string; driverPaid: bo
  */
 export async function registerShift(
   clientId: string,
-  input: { driverId?: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; actor?: Actor },
+  input: { driverId?: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; confirmOvernight?: unknown; actor?: Actor },
 ) {
   return moneyTransaction(async () => {
   const serviceDate = input.date === undefined ? todayBogota() : input.date;
@@ -196,15 +237,21 @@ export async function registerShift(
   await assertOpenInstant(paidAt, "El desembolso del turno");
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
+  if (!client.active) throw badRequest("El cliente está desactivado. Reactívalo antes de registrar turnos.");
   if (!input.driverId) throw badRequest("Selecciona un domiciliario");
   const driver = await prisma.driver.findUnique({ where: { id: input.driverId } });
   if (!driver) throw badRequest("Domiciliario no encontrado");
+  if (!driver.active) throw badRequest("El domiciliario está desactivado.");
+  if (typeof input.startTime !== "string" || typeof input.endTime !== "string") throw badRequest("Horas inválidas. Usa el formato HH:MM (24h)");
+  validateRates(client.driverHourValue, client.companyHourValue);
 
-  const minutes = computeMinutes(input.startTime, input.endTime);
-  if (!Number.isFinite(minutes)) throw badRequest("Horas inválidas. Usa el formato HH:MM (24h)");
-  if (minutes <= 0) throw badRequest("La hora de salida debe ser posterior a la de entrada");
-
-  const { driverAmount, companyAmount, totalAmount } = computeAmounts(client, minutes);
+  const { minutes, driverAmount, companyAmount, totalAmount } = assertShiftTimes(input.startTime, input.endTime, serviceDate, client, input.confirmOvernight);
+  // Doble clic / reintento: el mismo turno (cliente, domiciliario, día, horas) no se registra dos veces.
+  const dup = await prisma.hourlyShift.findFirst({
+    where: { hourlyClientId: clientId, driverId: driver.id, date: serviceDate, startTime: input.startTime.trim(), endTime: input.endTime.trim() },
+    select: { id: true },
+  });
+  if (dup) throw conflict("Ese turno ya está registrado (mismo domiciliario, día y horas). No se registró de nuevo.");
   // Defensa ante tarifas históricas inválidas guardadas antes de esta validación.
   assertMoney(driverAmount, true); assertMoney(companyAmount, true); assertMoney(totalAmount);
   if (input.medium !== "bank" && input.medium !== "cash") throw badRequest("Medio inválido (cash o bank).");
@@ -228,6 +275,8 @@ export async function registerShift(
         driverAmount,
         companyAmount,
         totalAmount,
+        driverHourValue: client.driverHourValue,
+        companyHourValue: client.companyHourValue,
         driverPaid: true,
         driverPaidMedium: medium,
         driverPaidAt: paidAt,
@@ -418,7 +467,7 @@ export async function payClient(
  */
 export async function editShift(
   shiftId: string,
-  input: { driverId?: string; startTime?: string; endTime?: string; date?: string },
+  input: { driverId?: string; startTime?: string; endTime?: string; date?: string; confirmOvernight?: unknown },
 ) {
   return moneyTransaction(async () => {
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId }, include: { hourlyClient: true } });
@@ -442,18 +491,25 @@ export async function editShift(
   const date = input.date ?? shift.date;
   await assertServiceDate(date);
 
-  const minutes = computeMinutes(startTime, endTime);
-  if (!Number.isFinite(minutes)) throw badRequest("Horas inválidas. Usa el formato HH:MM (24h)");
-  if (minutes <= 0) throw badRequest("La hora de salida debe ser posterior a la de entrada");
-
-  const { driverAmount, companyAmount, totalAmount } = computeAmounts(shift.hourlyClient, minutes);
+  // Se recalcula con la tarifa CONGELADA del turno, no con la vigente del cliente: cambiar la
+  // tarifa no debe re-preciar turnos ya registrados.
+  const rates = shiftRates(shift);
+  const timesChanged = startTime !== shift.startTime || endTime !== shift.endTime;
+  const { minutes, driverAmount, companyAmount, totalAmount } = assertShiftTimes(
+    startTime, endTime, date, rates, timesChanged ? input.confirmOvernight : true,
+  );
+  const dup = await prisma.hourlyShift.findFirst({
+    where: { id: { not: shiftId }, hourlyClientId: shift.hourlyClientId, driverId, date, startTime, endTime },
+    select: { id: true },
+  });
+  if (dup) throw conflict("Ya existe otro turno igual (mismo domiciliario, día y horas).");
   assertMoney(driverAmount, true); assertMoney(companyAmount, true); assertMoney(totalAmount);
   const deltaTotal = totalAmount - shift.totalAmount;
 
   await prisma.$transaction(async (tx) => {
     await tx.hourlyShift.update({
       where: { id: shiftId },
-      data: { driverId, driverName, date, startTime, endTime, minutes, driverAmount, companyAmount, totalAmount },
+      data: { driverId, driverName, date, startTime, endTime, minutes, driverAmount, companyAmount, totalAmount, driverHourValue: rates.driverHourValue, companyHourValue: rates.companyHourValue },
     });
 
     if (shift.driverPaid) {

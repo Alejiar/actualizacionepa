@@ -1,7 +1,10 @@
 # Guía de pruebas manuales — EPA Domicilios (base DEMO de este PC)
 
 Todo ocurre en la **base DEMO** de este PC, con datos ficticios. No afecta producción.
-Versión: commit `bea002a`, con F14 (base y comisiones separadas) y D7 (corrección de días cerrados).
+Versión: rama `claude/entrega-final` (15-oct-2026), con:
+- F14 (base y comisiones separadas);
+- D7 (corrección de días cerrados);
+- las 3 decisiones finales: pedido manual tras el Cierre, turnos que cruzan medianoche y tarifas/trabajadores editables.
 
 ## Antes de empezar
 
@@ -11,7 +14,7 @@ Versión: commit `bea002a`, con F14 (base y comisiones separadas) y D7 (correcci
    - La clave de ambos está en `C:\cash-buddy-epa\DEMO_CREDENCIALES.local`.
 3. Haz los escenarios **en orden**: cada uno parte del saldo que dejó el anterior.
 
-**Saldos de partida (14-oct-2026):** Efectivo **$118.600** · Banco **$122.400**.
+**Saldos de partida:** Efectivo **$118.600** · Banco **$122.400**. Haz toda la guía el **mismo día** (lo llamamos "hoy").
 
 **Cómo están los domiciliarios DEMO:**
 - **Demo A:** comisión **$5.400** y base sin devolver **$9.600** (total informativo $15.000).
@@ -32,7 +35,7 @@ Versión: commit `bea002a`, con F14 (base y comisiones separadas) y D7 (correcci
 ### E2. Saldos y cuentas separadas
 - **Pantalla:** Dashboard. Esperado: efectivo **$118.600**, banco **$122.400**.
 - **Pantalla:** Deudas. Esperado: columnas **Comisiones**, **Base** y **Total inf.**; Demo A = $5.400 / $9.600 / $15.000.
-- **Pantalla:** Historial, día 14. Esperado: **$241.000**.
+- **Pantalla:** Historial, día de hoy. Esperado: **$241.000**.
 
 ### E3. Ingreso bancario
 - **Pantalla:** Banco → nuevo ingreso: $30.000 por transferencia, sin contraparte.
@@ -95,27 +98,77 @@ Versión: commit `bea002a`, con F14 (base y comisiones separadas) y D7 (correcci
   - Comisiones pendientes **$72.600** (las de los domiciliarios reales).
   - Contrapartes **$0**.
   - Clientes **$30.000**.
-- **Historial, día 14:** apertura + ingresos − egresos = cierre = **$284.000** (136.600 + 147.400).
+- **Historial, hoy:** apertura + ingresos − egresos = cierre = **$284.000** (136.600 + 147.400).
 - **Excel:** hoja "Domiciliarios" con columnas de comisión, crédito, base y total informativo.
 
-### E13. Cierre del día
+### E13. Editar tarifas de un cliente por hora
+- **Pantalla:** Clientes → Clientes por hora → "Cliente por hora DEMO" → **Editar tarifas**.
+- **Valores:** domiciliario $12.000 y empresa $6.000 (antes $10.000 + $5.000).
+- **Esperado:**
+  - El total por hora pasa de $15.000 a **$18.000**.
+  - La confirmación avisa que los turnos ya registrados no cambian.
+  - El turno de E11 sigue en **$15.000**.
+  - La caja no cambia.
+- **Prueba negativa:** dejar las dos tarifas en 0 se rechaza.
+
+### E14. Turno que cruza medianoche
+- **Pantalla:** "Cliente por hora DEMO" → **Registrar turno**, con Demo B.
+- **Paso 1 (aviso):** entrada **10:00**, salida **09:00** → Registrar turno. Debe aparecer:
+  - "Este turno termina mañana y tiene una duración de 23 horas. ¿Deseas registrarlo?";
+  - el inicio y el fin con sus fechas;
+  - domiciliario $276.000, empresa $138.000 y total $414.000.
+  - Pulsa **Cancelar**: no se guarda nada y el efectivo sigue en **$136.600**.
+- **Paso 2 (confirmar):** entrada **22:00**, salida **00:00**, efectivo.
+  - Aviso de 2 horas: domiciliario $24.000, empresa $12.000, total $36.000.
+  - Pulsa **Sí, registrar turno**.
+  - **Esperado:** efectivo **$112.600**; deuda del cliente **$36.000**.
+- **Pruebas negativas:**
+  - Entrada igual a salida se rechaza.
+  - Registrar dos veces el mismo turno (mismo domiciliario, día y horas) se rechaza.
+
+### E15. Trabajadores: renombrar y desactivar
+- **Pantalla:** Trabajadores → **Agregar trabajador** "Auxiliar prueba" (Administrativo).
+- **Paso 1:** ábrelo → **Registrar pago** de $5.000 en efectivo → efectivo **$107.600**.
+- **Paso 2:** lápiz ✏️ → renómbralo "Auxiliar renombrado".
+  - Es el mismo trabajador: "Nómina pagada" sigue en **$5.000**.
+  - Un nombre vacío o el de otro trabajador se rechaza.
+- **Paso 3:** pulsa **Activo** y confirma para desactivarlo.
+  - Queda "Inactivo"; "Registrar pago" desaparece y su historial se conserva.
+- **Paso 4 (admin):** **Eliminar trabajador** → se rechaza porque tiene historial. Reactívalo.
+- **Operador:** puede renombrar y activar/desactivar, pero **no** ve "Eliminar trabajador" (el servidor responde 403).
+
+### E16. Cierre del día
 - **Pantalla:** Caja → Cierre.
-- **Valores:** cuenta **$136.600** en efectivo y **$147.400** en banco.
-- **Esperado:** diferencias **0**; el día 14 queda **verde** en Historial.
+- **Valores:** cuenta **$107.600** en efectivo y **$147.400** en banco.
+- **Esperado:** diferencias **0**; hoy queda **verde** en Historial.
 - **Después:** registrar dinero nuevo con fecha de hoy se rechaza (día cerrado).
 
-### E14. Corregir el día cerrado (D7)
-- **Operador, Historial:** día 14 → **"Solicitar agregar un movimiento olvidado a este día"**.
+### E17. Corregir el día cerrado (D7)
+- **Operador, Historial:** hoy → **"Solicitar agregar un movimiento olvidado a este día"**.
   - Valores: egreso, efectivo, $1.000, "Olvido de prueba"; motivo "Prueba D7".
 - **Admin, Solicitudes:** la tarjeta dice "Agregar a día cerrado". Pulsa **Aprobar y aplicar**.
 - **Esperado:**
-  - El efectivo esperado pasa a **$135.600**.
-  - En Historial, día 14: "Cierre registrado (conteo original)" sigue en **$136.600** con diferencia **$0**.
-  - Aparece "Correcciones aprobadas después del cierre (1): −$1.000" y "Esperado corregido $135.600".
+  - El efectivo esperado pasa a **$106.600**.
+  - En Historial, "Cierre registrado (conteo original)" sigue en **$107.600** con diferencia **$0**.
+  - Aparece "Correcciones aprobadas después del cierre (1)".
   - El día sigue **verde**.
 - **Prueba negativa:** sin solicitud, editar o eliminar directamente un movimiento de ese día se rechaza. Una solicitud **rechazada** no cambia nada.
 
-### E15. Persistencia
+### E18. Pedido manual después del Cierre
+- **Admin, Sucursales:** activa "Sucursal DEMO (ficticia)".
+- **Pantalla:** Pedidos → **Registrar pedido**: Demo A, **$40.000**, número "POST-CIERRE".
+  - Fecha de entrega: hoy.
+  - Hora: una **anterior** a la actual. Una hora futura no deja continuar.
+  - Debe aparecer el aviso "🔒 Ese día ya tiene Cierre…".
+- **Esperado:**
+  - Deudas → Demo A, comisión **$12.000** (el 30 %).
+  - Efectivo **$106.600** y banco **$147.400**: **sin cambios**.
+  - Historial, hoy: sigue verde; el conteo original sigue en $107.600; la comisión del día aumenta $12.000.
+  - Reportes: Total ventas **$108.600** (96.600 + 12.000).
+- **Prueba negativa:** registrar otra vez el mismo número ese día se rechaza ("Ya existe el pedido #POST-CIERRE…").
+- Después, desactiva de nuevo la sucursal ficticia.
+
+### E19. Persistencia
 - Reinicia el PC o termina el proceso `node` y abre CashBuddy de nuevo. Los saldos y registros deben ser los mismos.
 
 ---
@@ -124,4 +177,4 @@ Versión: commit `bea002a`, con F14 (base y comisiones separadas) y D7 (correcci
 - **Pedido #22** (Shipday 54814555): tarifa $40.000 y comisión **$12.000**. Su domiciliario quedó en $0 tras una base y un pago **ficticios**.
 - Los pedidos **54814075** y **54808397** están en $0 / #00 porque Shipday los reporta sin tarifa. Revísalos en Shipday.
 - La "Sucursal real (lectura)" está **pausada**. Si la activas, consulta Shipday con tu key y comparte el límite de peticiones con producción.
-- Un pedido entregado **después** del Cierre del día se carga en ese día (no mueve caja). Solo un **mes** cerrado lo bloquea.
+- Un pedido entregado **después** del Cierre del día, de Shipday o manual, se carga en ese día y no mueve caja. Solo un **mes** cerrado lo bloquea.

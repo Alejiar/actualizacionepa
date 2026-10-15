@@ -222,13 +222,16 @@ async function main() {
     });
     await check("LOCK12", "Rutas HTTP de ingreso, egreso, nómina y pedido manual cerrados; webhook posterior al Cierre carga el pedido", async () => {
       await closeDay();
-      for (const [route, input] of [["/movements", { date: today, category: 1, type: "ingreso", medium: "cash", amount: 1000 }], ["/movements", { date: today, category: 5, type: "egreso", medium: "cash", amount: 1000 }], ["/sd/orders/manual", { branchId: branch.id, driverId: driver.id, deliveryValue: 10000 }]]) {
+      for (const [route, input] of [["/movements", { date: today, category: 1, type: "ingreso", medium: "cash", amount: 1000 }], ["/movements", { date: today, category: 5, type: "egreso", medium: "cash", amount: 1000 }]]) {
         assert.equal((await api(route as string, "POST", input)).status, 409);
       }
       const hook = await fetch(origin + "/api/webhooks/shipday/" + branch.id, { method: "POST", headers: { token: "independent-test-token", "Content-Type": "application/json" }, body: JSON.stringify({ event: "ORDER_COMPLETED", order: { id: "closed", delivery_fee: 10000, delivery_time: Date.now() }, carrier: { id: "def-driver" } }) });
-      // Decisión del dueño (14-oct-2026): un pedido entregado tras el Cierre se carga en su día
-      // (no mueve caja); el dinero (movimientos, pedido manual) sigue rechazado.
-      assert.equal(hook.status, 200); assert.equal(await p.shipdayOrder.count(), 1); assert.equal(await p.movement.count(), 0);
+      // Decisiones del dueño: un pedido entregado tras el Cierre se carga en su día porque no mueve
+      // caja — Shipday (14-oct-2026) y también el pedido MANUAL (15-oct-2026). El dinero
+      // (movimientos de Caja) sigue rechazado.
+      const manual = await api("/sd/orders/manual", "POST", { branchId: branch.id, driverId: driver.id, deliveryValue: 10000 });
+      assert.equal(manual.status, 201);
+      assert.equal(hook.status, 200); assert.equal(await p.shipdayOrder.count(), 2); assert.equal(await p.movement.count(), 0);
     });
     await check("LOCK13", "Gasto pendiente se puede rechazar; aprobarlo tras cierre no cambia caja", async () => {
       const expense = await api("/movements", "POST", { date: today, category: 3, type: "egreso", medium: "cash", amount: 1000 });
@@ -305,6 +308,13 @@ async function main() {
       await hourly.updateHourlyClient(hc.id, { driverHourValue: 0 });
       const s = await hourly.registerShift(hc.id, shiftInput()); assert.equal(await p.bankTransaction.count(), 0);
       await hourly.updateHourlyClient(hc.id, { driverHourValue: 12000 });
+      // Decisión del dueño (15-oct-2026): cambiar la tarifa NO re-precia turnos ya registrados.
+      // Editar las horas conserva la tarifa propia del turno (domiciliario 0): sin egreso nuevo.
+      await hourly.editShift(s.id, { endTime: "10:00" });
+      assert.equal(await p.bankTransaction.count(), 0);
+      assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 16000);
+      // El egreso faltante se sigue creando cuando la tarifa PROPIA del turno tiene valor para el domiciliario.
+      await p.hourlyShift.update({ where: { id: s.id }, data: { driverHourValue: 12000 } });
       await hourly.editShift(s.id, { endTime: "10:00" });
       assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 40000);
       assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), { cash: 76000, bank: 100000 });

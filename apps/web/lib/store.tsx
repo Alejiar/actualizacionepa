@@ -68,9 +68,10 @@ interface Ctx {
   updateMovement: (date: string, id: string, patch: Partial<Movement>) => Promise<void>;
   deleteMovement: (date: string, id: string) => Promise<void>;
   refreshDay: (date: string) => Promise<void>;
-  addWorker: (w: Omit<Worker, "id" | "color"> & { color?: string }) => Promise<void>;
-  updateWorker: (id: string, patch: Partial<Worker>) => Promise<void>;
-  removeWorker: (id: string) => Promise<void>;
+  /** true si el servidor aceptó el cambio (el error ya se mostró como aviso). */
+  addWorker: (w: Omit<Worker, "id" | "color"> & { color?: string }) => Promise<boolean>;
+  updateWorker: (id: string, patch: Partial<Worker>) => Promise<boolean>;
+  removeWorker: (id: string) => Promise<boolean>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
   setArqueo: (date: string, slot: "AM" | "PM" | "close", arqueo: Arqueo) => Promise<void>;
   resetAll: () => Promise<void>;
@@ -208,8 +209,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       try {
         await api("/workers", { method: "POST", body: w });
         await refreshWorkers();
+        return true;
       } catch (e) {
         toast.error((e as Error)?.message ?? "Error al crear trabajador");
+        return false;
       }
     },
     [refreshWorkers],
@@ -220,8 +223,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       try {
         await api(`/workers/${id}`, { method: "PATCH", body: patch });
         await refreshWorkers();
+        return true;
       } catch (e) {
         toast.error((e as Error)?.message ?? "Error al actualizar trabajador");
+        return false;
       }
     },
     [refreshWorkers],
@@ -232,8 +237,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       try {
         await api(`/workers/${id}`, { method: "DELETE" });
         await refreshWorkers();
+        return true;
       } catch (e) {
         toast.error((e as Error)?.message ?? "Error al eliminar trabajador");
+        return false;
       }
     },
     [refreshWorkers],

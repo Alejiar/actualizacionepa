@@ -156,6 +156,10 @@ export const createManualOrder = (data: {
   clientId?: string;
   addToClientDebt?: boolean;
   notes?: string;
+  /** "AAAA-MM-DD" o instante con zona: fecha REAL de entrega (puede ser un día ya cerrado). */
+  deliveredAt?: string;
+  /** Misma clave en un reintento = el mismo pedido (no duplica la comisión). */
+  idempotencyKey?: string;
 }) => apiFetch<Order>("/sd/orders/manual", { method: "POST", body: JSON.stringify(data) });
 
 // ─── Closes ───────────────────────────────────────────────────────────────────
@@ -742,6 +746,9 @@ export const payClient = (clientId: string, amount: number, payAll = false, medi
 export interface HourlyShift {
   id: string;
   hourlyClientId: string;
+  /** Tarifa congelada con la que se valoró el turno (null en turnos viejos no reconstruibles). */
+  driverHourValue?: number | null;
+  companyHourValue?: number | null;
   driverId?: string | null;
   driverName: string;
   date: string;
@@ -795,7 +802,7 @@ export const deleteHourlyClient = (id: string) =>
   apiFetch<void>(`/hourly-clients/${id}`, { method: "DELETE" });
 export const registerHourlyShift = (
   clientId: string,
-  data: { driverId: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank" },
+  data: { driverId: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; confirmOvernight?: boolean },
 ) => apiFetch<HourlyShift>(`/hourly-clients/${clientId}/shifts`, { method: "POST", body: JSON.stringify(data) });
 export const payHourlyClient = (clientId: string, amount: number, payAll = false, medium: "cash" | "bank" = "cash") =>
   apiFetch<{ applied: number; remaining: number }>(`/hourly-clients/${clientId}/pay`, {
@@ -805,7 +812,7 @@ export const payHourlyDriver = (shiftId: string, medium: "cash" | "bank") =>
   apiFetch<{ ok: boolean }>(`/hourly-shifts/${shiftId}/pay-driver`, {
     method: "POST", body: JSON.stringify({ medium }),
   });
-export const editHourlyShift = (shiftId: string, data: { driverId?: string; startTime?: string; endTime?: string; date?: string }) =>
+export const editHourlyShift = (shiftId: string, data: { driverId?: string; startTime?: string; endTime?: string; date?: string; confirmOvernight?: boolean }) =>
   apiFetch<{ ok: boolean }>(`/hourly-shifts/${shiftId}`, { method: "PATCH", body: JSON.stringify(data) });
 export const deleteHourlyShift = (shiftId: string) =>
   apiFetch<void>(`/hourly-shifts/${shiftId}`, { method: "DELETE" });
