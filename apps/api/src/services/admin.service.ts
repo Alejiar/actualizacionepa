@@ -12,7 +12,7 @@ import { conflict } from "../lib/errors";
 export async function resetAll(): Promise<void> {
   return moneyTransaction(async () => {
   if (await prisma.shiftClose.count() || await prisma.monthlyClose.count()) {
-    throw conflict("El reinicio no puede borrar cierres históricos. Conserva la base y su respaldo; D7 sigue pendiente.");
+    throw conflict("El reinicio no puede borrar cierres históricos. Conserva la base y su respaldo; las correcciones se hacen con solicitudes aprobadas.");
   }
   // Orden respetando foreign keys:
   // Primero los hijos, luego los padres.

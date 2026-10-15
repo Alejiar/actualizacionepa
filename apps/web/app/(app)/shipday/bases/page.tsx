@@ -86,7 +86,7 @@ export default function BasesPage() {
       const data = { cashAmount, bankAmount, notes: formNotes || undefined };
       if (showForm === "give") await api.giveBase(formDriver, data);
       else await api.payBase(formDriver, data);
-      toast.success(showForm === "give" ? "Base entregada registrada" : "Pago de base registrado");
+      toast.success(showForm === "give" ? "Base entregada registrada" : "Devolución de base registrada");
       setShowForm(null);
       setFormDriver(""); setFormCash(""); setFormBank(""); setFormNotes("");
       load();
@@ -144,7 +144,7 @@ export default function BasesPage() {
             <Plus className="h-4 w-4" /> Entregar base
           </button>
           <button onClick={() => setShowForm("pay")} className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-xl text-sm font-bold hover:opacity-90 transition">
-            <Plus className="h-4 w-4" /> Registrar pago
+            <Plus className="h-4 w-4" /> Registrar devolución de base
           </button>
         </div>
       </div>
@@ -280,7 +280,7 @@ export default function BasesPage() {
       {showForm && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="glass-strong rounded-3xl p-6 w-full max-w-sm space-y-4">
-            <h2 className="font-black text-lg">{showForm === "give" ? "Entregar base" : "Registrar pago de base"}</h2>
+            <h2 className="font-black text-lg">{showForm === "give" ? "Entregar base" : "Registrar devolución de base"}</h2>
             <form onSubmit={handleSubmit} className="space-y-3">
               <div>
                 <label className="text-xs text-muted-foreground font-medium">Domiciliario</label>
@@ -314,7 +314,7 @@ export default function BasesPage() {
                 <button type="button" onClick={() => setShowForm(null)} className="flex-1 py-2.5 rounded-xl border border-border hover:bg-secondary transition">Cancelar</button>
                 <button type="submit" disabled={saving}
                   className={`flex-1 py-2.5 rounded-xl font-bold text-white transition disabled:opacity-50 ${showForm === "give" ? "bg-orange-500 hover:bg-orange-600" : "bg-green-600 hover:bg-green-700"}`}>
-                  {saving ? "..." : showForm === "give" ? "Entregar" : "Registrar pago"}
+                  {saving ? "..." : showForm === "give" ? "Entregar" : "Registrar devolución"}
                 </button>
               </div>
             </form>

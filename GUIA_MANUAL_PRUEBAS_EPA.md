@@ -52,9 +52,11 @@ Versión: commit `bea002a`, con F14 (base y comisiones separadas) y D7 (correcci
 
 ### E6. Cliente con deuda y abono
 - **Pantalla:** Clientes.
-- **Pasos:** crea "Cliente prueba", con una deuda de $20.000 **sin** medio de desembolso, y luego un abono de $5.000 en efectivo.
+- **Pasos:** crea "Cliente prueba", con una deuda de $20.000. En "¿Sale dinero de la caja?" elige **📝 No sale dinero (fiado)**. Luego registra un abono de $5.000 en efectivo.
 - **Esperado:** Efectivo **$133.600** y deuda del cliente $15.000.
-- **Prueba negativa:** un abono mayor que la deuda se rechaza.
+- **Pruebas negativas:**
+  - Sin elegir una de las tres opciones de medio, el botón Siguiente no avanza.
+  - Un abono mayor que la deuda se limita al saldo pendiente.
 
 ### E7. Pedido manual y comisión del 30 %
 - **Admin, Sucursales:** edita "Sucursal DEMO (ficticia)" y marca **Activa**. Mientras esté activa mostrará un error de sincronización con Shipday: es esperado, porque es ficticia.

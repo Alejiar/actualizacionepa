@@ -193,10 +193,12 @@ export default function WorkersPage() {
                           <StatBox label="Valor total" value={formatCOP(stmt.totalValue)} />
                           <StatBox label="% empresa" value={formatCOP(stmt.totalCompany)} highlight />
                         </div>
-                        <div className="grid grid-cols-3 gap-3">
+                        {/* F14: comisión y base son cuentas separadas; se muestran por separado. */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                           <StatBox label="Bases recibidas" value={formatCOP(stmt.totalBasesGiven)} />
-                          <StatBox label="Bases pagadas" value={formatCOP(stmt.totalBasesPaid)} />
-                          <StatBox label="Deuda pendiente" value={formatCOP(stmt.pendingDebt)} warn={stmt.pendingDebt > 0} />
+                          <StatBox label="Bases devueltas" value={formatCOP(stmt.totalBasesPaid)} />
+                          <StatBox label="Base sin devolver" value={formatCOP(stmt.basePending ?? 0)} warn={(stmt.basePending ?? 0) > 0} />
+                          <StatBox label="Deuda por comisiones" value={formatCOP(stmt.pendingDebt)} warn={stmt.pendingDebt > 0} />
                         </div>
 
                         {stmt.orders.length > 0 && (

@@ -71,3 +71,10 @@ La DEMO se puede conservar o eliminar (`DROP DATABASE cashbuddy_demo`) cuando ya
 - Las claves DEMO están en `DEMO_CREDENCIALES.local`. Se cambiaron por una sin caracteres ambiguos.
 - Interfaz: 23 pantallas × 2 roles visitadas sin errores. Corregidos dos casos de 403 con el operador (Equipos y Solicitudes).
 - Los escenarios de `GUIA_MANUAL_PRUEBAS_EPA.md` se ejecutaron sobre una **copia** de la DEMO: los 19 saldos de la guía coinciden con la app.
+
+## 8. Tercera ronda (14-oct-2026): formularios con clic real
+
+- Los 27 formularios y un recorrido financiero completo se ejecutaron con clics en una **copia** de la DEMO, con la red externa bloqueada. El detalle está en `CLAUDE_MATRIZ_COBERTURA_TOTAL_EPA.md` (§3–§6).
+- Se corrigieron 8 defectos (D-B1 a D-B8). Se recompilaron `apps/api/dist` y `apps/web/out`.
+- A las 17:44 se terminó el backend de la DEMO y el watchdog lo relanzó con la compilación nueva. Quedó sano y los saldos DEMO siguen en 118.600 / 122.400.
+- La ventana de CashBuddy.exe sigue **sin verificación visual** (control de pantalla denegado).

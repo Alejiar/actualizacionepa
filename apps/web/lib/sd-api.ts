@@ -32,6 +32,9 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error?: string }).error ?? res.statusText);
   }
+  // 204 (eliminar equipo, desactivar sucursal, eliminar conversión): no hay cuerpo que leer;
+  // intentar res.json() mostraba un error falso aunque la acción sí se había aplicado.
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -300,10 +303,11 @@ export async function getUnifiedBankMovements(params?: { from?: string; to?: str
   const fromConvs: UnifiedBankMovement[] = convs.map(c => ({
     id: c.id,
     type: c.type === "efectivo_a_banco" ? "consignacion" : "retiro",
-    // efectivo_a_banco: entró efectivo / salió banco; banco_a_efectivo: al revés
-    medium: c.type === "efectivo_a_banco" ? "cash" : "bank",
+    // Igual que el backend (saldo esperado, resumen del día, Excel): efectivo_a_banco = sale
+    // efectivo y entra al banco (consignación); banco_a_efectivo = sale del banco y entra efectivo.
+    medium: "bank",
     amount: c.amount,
-    description: c.notes || (c.type === "efectivo_a_banco" ? "Recibí efectivo / Envié transferencia" : "Recibí transferencia / Entregué efectivo"),
+    description: c.notes || (c.type === "efectivo_a_banco" ? "Consignación: salió efectivo, entró al banco" : "Retiro: salió del banco, entró efectivo"),
     reference: undefined,
     branchId: c.branchId,
     branchName: c.branch?.name,
@@ -334,6 +338,8 @@ export interface UnifiedMovement {
   entityType: string;
   entityId: string;
   editableDescription: boolean;
+  /** Desglose por medio si el registro mueve efectivo y banco (base mixta, cobro dividido, conversión). */
+  parts?: { type: "ingreso" | "egreso"; medium: "cash" | "bank"; amount: number }[];
 }
 
 export const getUnifiedMovements = (params?: { from?: string; to?: string; limit?: number }) => {

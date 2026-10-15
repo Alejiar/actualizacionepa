@@ -1,149 +1,236 @@
 # Matriz de cobertura funcional total — EPA Domicilios
 
-Fecha: 14-oct-2026. Código: commit `bea002a` (rama `claude/entrega-final`, sin push). PC de pruebas con base DEMO.
+Fecha: 14-oct-2026, segunda ronda. Rama `claude/entrega-final`, sin push. Probado en el PC de pruebas.
 
-Las cifras salen de ejecuciones reales, no de una lista escrita a mano:
-- `tests/claude-cobertura.ts` lee **todas** las rutas del router y comprueba cuáles se ejecutaron y verificaron;
-- el recorrido de la interfaz visitó cada pantalla con cada rol;
-- las baterías financieras comprueban los efectos al peso.
+**Cómo se probó la interfaz:**
+- Sobre una **copia** de la base DEMO (`cashbuddy_claude_ui`).
+- Con la compilación de producción servida en `127.0.0.1:4918`.
+- Con la **red externa bloqueada**, así que no hubo ninguna llamada a Shipday.
+- La DEMO del propietario (`cashbuddy_demo`) **no se tocó**: sigue en 118.600 / 122.400.
 
-**Número de pruebas ≠ cobertura.** Las tablas cuentan **funcionalidades**: rutas, pantallas, flujos y procesos.
+**De dónde salen las cifras.** Todas vienen de ejecuciones reales:
+- `tests/claude-cobertura.ts` lee **todas** las rutas del router;
+- los formularios se pulsaron uno por uno con datos ficticios;
+- cada saldo esperado se calculó a mano, aparte del sistema, y al final se contrastó con sumas SQL directas.
 
-## 1. Resumen
+**Número de pruebas ≠ cobertura.** Las tablas cuentan **funcionalidades**.
+
+## 1. Resumen por tipo de prueba
 
 | Categoría | Descubiertas | Ejecutadas | Aprobadas | Corregidas y repetidas | Fallidas | Bloqueadas | Sin ejecutar |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Rutas de la API (cada endpoint, con su efecto) | 124 | 124 | 124 | 5 | 0 | 0 | 0 |
-| Barrido de permisos (120 rutas protegidas sin sesión → 401; 33 de admin con operador → 403; sin efectos) | 153 | 153 | 153 | 0 | 0 | 0 | 0 |
-| Pantallas × rol (operador y admin) | 46 | 46 | 46 | 2 | 0 | 0 | 0 |
-| Flujos de interfaz con clic real | 9 | 9 | 9 | 1 | 0 | 0 | 0 |
-| Formularios de interfaz ejercitados solo por su endpoint | 15 | 15 (API) | 15 (API) | 0 | 0 | 0 | 15 (sin clic) |
-| Reglas financieras F14 / D7 / pedidos post-cierre | 27 | 27 | 27 | 1 | 0 | 0 | 0 |
-| Migraciones (instalación, 33→36, datos heredados F14, recuperación) | 6 | 6 | 6 | 1 | 0 | 0 | 0 |
-| Procesos automáticos y app de Windows | 10 | 9 | 9 | 2 | 0 | 1 | 0 |
+| **API**: rutas, cada una con su efecto | 124 | 124 | 124 | 5 | 0 | 0 | 0 |
+| **API**: barrido de permisos (401 sin sesión / 403 operador) | 153 | 153 | 153 | 0 | 0 | 0 | 0 |
+| **API**: reglas F14 / D7 / pedidos post-cierre / último admin / movimientos por medio | 29 | 29 | 29 | 3 | 0 | 0 | 0 |
+| **Interfaz**: pantallas × rol | 46 | 46 | 46 | 2 | 0 | 0 | 0 |
+| **Interfaz**: formularios con **clic real**, criterios del §3 | 27 | 27 | 27 | 8 | 0 | 0 | 0 |
+| **Interfaz**: recorrido financiero completo, con importes calculados aparte (§4) | 1 (12 tramos) | 1 | 1 | 0 | 0 | 0 | 0 |
+| **Escritorio**: CashBuddy.exe, procesos | 9 | 9 | 9 | 2 | 0 | 0 | 0 |
+| **Escritorio**: ventana WebView2 vista en pantalla | 1 | 0 | 0 | 0 | 0 | **1** | 0 |
+| **Integración**: Shipday (solo lectura, simulado y red bloqueada) | 6 | 6 | 6 | 2 | 0 | 0 | 0 |
+| Migraciones (instalación, 33→36, datos heredados F14) | 6 | 6 | 6 | 1 | 0 | 0 | 0 |
 
-**Bloqueada (1):** la ventana WebView2 no se inspeccionó visualmente. El propietario denegó el control de pantalla. Su contenido es la misma página verificada en `localhost:4000`.
+**Bloqueada (1):** la ventana de CashBuddy.exe **no se ha verificado visualmente**, porque el propietario denegó el control de pantalla.
+- Lo que sí se comprobó: el backend que la ventana carga (`localhost:4000`) responde, se reinicia con el watchdog y ya corre la compilación nueva.
+- Lo que no: no se vio la ventana en sí.
 
-**Sin clic (15):** formularios cuyo endpoint está verificado al 100 %, pero que no se pulsaron uno por uno en la interfaz (detalle en §4).
+Los 15 formularios que en la ronda anterior quedaron "solo por endpoint" ahora están **todos ejecutados con clic real** (§3).
 
 ## 2. Cobertura de la API por módulo
 
-Fuente: `apps/api/tests/claude-cobertura.json`. Cada ruta se ejecutó con datos ficticios y se comprobó su efecto en la base. En las rutas de dinero, el cambio de efectivo y banco se comparó con el delta calculado aparte (`money(Δcaja, Δbanco)`).
+Fuente: `apps/api/tests/claude-cobertura.json` y `claude-f14-d7.json`. En las rutas de dinero, el cambio de efectivo y banco se compara con el delta calculado aparte.
 
-| Módulo | Rutas | Verificadas | De administrador | Pruebas de efecto |
+| Módulo | Rutas | Verificadas | De admin | Pruebas de efecto |
 |---|---:|---:|---:|---|
 | Administración (reset/recalcular) | 2 | 2 | 2 | RESET-01/02, REQ-01 |
 | Banco y contrapartes | 5 | 5 | 1 | BANK-01, F14-BANK, F01*, PAIR* |
 | Bases | 6 | 6 | 2 | BASE-01, F14-MIX/MES/CONC/INTEG |
 | Caja y gastos (movimientos) | 8 | 8 | 3 | MOV-01, F05*, LOCK13 |
-| Cierre mensual, reportes y Excel | 6 | 6 | 1 | CLOSE-01, F14-CIERRE, INTEGRATED, demo-escenario |
+| Cierre mensual, reportes y Excel | 6 | 6 | 1 | CLOSE-01, F14-CIERRE, INTEGRATED |
 | Clientes por hora | 11 | 11 | 3 | HOUR-01, HOUR01/02, F02* |
 | Clientes | 9 | 9 | 1 | CLI-01, N13/N14 |
-| Configuración y salud | 4 | 4 | 1 | CFG-01 (cada campo: guardar, persistir, inválido), M02 |
+| Configuración y salud | 4 | 4 | 1 | CFG-01, M02 |
 | Conversiones | 3 | 3 | 1 | CONV-01 |
-| Dashboard | 5 | 5 | 0 | DASH-01, interfaz |
+| Dashboard | 5 | 5 | 0 | DASH-01 |
 | Domiciliarios, pedidos y pagos | 7 | 7 | 0 | DRV-01, PAY-01, F14-A/B/C/D/SPLIT/VAL |
-| Equipos (PCs) | 11 | 11 | 10 | DEV-01 (PC servidor protegido + ciclo completo de un PC remoto) |
+| Equipos (PCs) | 11 | 11 | 10 | DEV-01 |
 | Historial y arqueo | 5 | 5 | 0 | DAY-01, D7-CHAIN |
 | Libreta de campo | 4 | 4 | 0 | NOTE-01 |
+| Movimientos unificados | 1 | 1 | 0 | **MOV-PARTS (nueva)** |
 | Red | 1 | 1 | 0 | NET-01 |
 | Reportes de trabajadores/nómina | 5 | 5 | 0 | WRK-01 |
 | Solicitudes y aprobaciones (D7) | 4 | 4 | 2 | REQ-01, D7-EDIT/REJ/DEL/ADD/ADDMOV/MES/VAL/DUP |
 | Sucursales y sincronización Shipday | 10 | 10 | 5 | BR-01/02, SYNC01–03, ORD-SYNC1/2, SHIP01 |
 | Trabajadores | 4 | 4 | 1 | WRK-01 |
-| Turnos y cierre diario | 6 | 6 | 1 | SHIFT-01, F04*, demo-escenario --cerrar |
-| Usuarios y autenticación | 7 | 7 | 5 | AUTH-01, USR-01, PERM-03, S01* |
+| Turnos y cierre diario | 6 | 6 | 1 | SHIFT-01, F04* |
+| Usuarios y autenticación | 7 | 7 | 5 | AUTH-01, USR-01, PERM-03, S01*, **USR-ADMIN (nueva)** |
 | Webhook Shipday | 1 | 1 | 0 | WH-01, ORD-POST, S02*, LOCK19 |
-| **Total** | **124** | **124 (100 %)** | **33** | |
 
-## 3. Interfaz: pantallas por rol
+## 3. Interfaz: formularios con clic real
 
-Recorrido automatizado en el navegador sobre la app real (`localhost:4000`), buscando errores de consola, respuestas ≥ 400, avisos de error y texto de error.
+Cada formulario se evaluó con los mismos criterios:
 
-| Pantalla | Operador | Admin | Nota |
+- **Crear:** el formulario crea el registro.
+- **Editar:** se probó donde existe edición.
+- **Validación:** se probó al menos un caso inválido.
+- **Permiso:** operador frente a admin.
+- **Persiste:** el dato sigue tras recargar o consultar.
+- **Efecto:** los saldos de efectivo y banco coinciden con el cálculo a mano.
+- **Reflejo:** el cambio aparece en Deudas, Movimientos, Historial o Reportes.
+
+**Convenciones de las tablas:**
+- **✔** significa verificado.
+- **—** significa que el formulario no tiene esa función.
+- Las cifras van en pesos; «→» indica el valor antes y después de la acción.
+
+### 3.1 Bases, clientes y conversiones
+
+| # | Formulario | Creación y edición | Validación | Permiso | Efecto (a mano = sistema) y reflejo |
+|---|---|---|---|---|---|
+| 1 | **Entregar base** (efectivo, banco o mixta) | ✔ / — (corrección por solicitud) | Sin domiciliario o sin monto se rechaza | Operador ✔ | Mixta 7.000 + 3.000: efectivo −7.000, banco −3.000, base +10.000, comisión igual. Movimientos con desglose por medio |
+| 2 | **Registrar devolución de base** (antes "Registrar pago") | ✔ | Devolver más que la base pendiente se rechaza con mensaje | Operador ✔ | Banco +4.000; efectivo +6.000; base pendiente baja exacto |
+| 3 | **Cliente por hora**: crear, turno, editar turno, eliminar turno, cobro parcial y total, desactivar | ✔ / ✔ (solicitud aprobada) | Tarifas en 0 se rechazan; cobro mayor que la deuda se rechaza | Editar turno: operador por solicitud, admin aprueba. Eliminar turno: solo admin | Turno 2 h: −24.000 y deuda 36.000; edición: −12.000 y deuda 54.000; cobros +20.000 por banco y +34.000 en efectivo; eliminación revierte exacto |
+| 4 | **Cliente nuevo con deuda inicial** | ✔ | Nombre vacío se bloquea; **sin elegir medio no avanza** | Operador ✔ | **Fiado:** caja sin cambio. **Préstamo:** sale de efectivo o banco. *(Defecto D-B1 corregido)* |
+| 5 | **+ Deuda** (préstamo o fiado) | ✔ | Monto 0 o medio sin elegir se bloquean | Operador ✔ | Préstamo por banco 5.000: banco −5.000, deuda 9.000 → 14.000 |
+| 6 | **Abonar / pagar deuda completa** | ✔ | Un abono mayor que la deuda se limita al saldo | Operador ✔ | Abono 6.000 por banco: +6.000, aplicado a la deuda más antigua. Pago total 14.000 en efectivo: deuda 0. La confirmación ahora muestra el medio |
+| 7 | **Conversión** (Banco → salida con contraparte + "Registrar Ingreso … para cuadrar") | ✔ | Contraparte por valor distinto se rechaza sin mover dinero | Operador ✔ | Banco −15.000 / efectivo +15.000, con `pairId`; "sin cuadrar" = 0 |
+
+Sobre el formulario 7: el antiguo asistente de conversión no está enlazado y `/shipday/conversiones` redirige a Banco.
+
+### 3.2 Gastos, movimientos y Banco
+
+| # | Formulario | Creación y edición | Validación | Permiso | Efecto (a mano = sistema) y reflejo |
+|---|---|---|---|---|---|
+| 8 | **Gasto** (pendiente → aprobar o rechazar) | ✔ | Monto o concepto vacío no avanza | Operador crea pendiente; aprueba o rechaza el admin | Pendiente: sin efecto. Aprobado: −6.500 / −3.000. Rechazado: sin efecto. Reportes: gastos 16.000 en efectivo + 2.500 por banco |
+| 9 | **Editar o eliminar movimiento** (Movimientos → solicitud) | ✔ (operador y admin solicitan) | Sin motivo no avanza; sin cambio no avanza | Aprobación solo del admin | Gasto 6.500 → 6.000: efectivo +500. En mes cerrado la aprobación falla con mensaje y la solicitud sigue pendiente |
+| 10 | **Registrar movimiento en Banco** (ingreso, salida, mixto, con o sin contraparte) | ✔ | Monto 0 no avanza | Operador ✔; borrar solo el admin | Cuadra al peso. La contraparte se fecha en el día del original |
+| 11 | **Descontar de deuda** con "Parte a devolver base" | ✔ | Parte a base mayor que el pago se rechaza sin mover dinero | Operador ✔ | Ingreso 8.000 con 3.000 a base: comisión 5.400 → 400, base 9.600 → 6.600, banco sin doble conteo. El botón desaparece al aplicarse. **El admin borra el ingreso:** comisión 5.400, base 9.600, banco −8.000, y se borran los registros vinculados |
+
+### 3.3 Domiciliarios, pedidos y caja
+
+| # | Formulario | Creación y edición | Validación | Permiso | Efecto (a mano = sistema) y reflejo |
+|---|---|---|---|---|---|
+| 12 | **Registrar pago** (Deudas): comisión y base por separado | ✔ | Base mayor que la pendiente se rechaza | Operador ✔ | 6.000 a comisión + 4.000 a base en efectivo: +10.000, comisión 7.200 → 1.200, base 9.600 → 5.600. Exceso: 5.000 sobre 3.000 deja crédito 2.000 **y no toca la base** |
+| 13 | **Pagar a domiciliario** (devolver crédito) | ✔ | — | Operador ✔ | Banco −2.000, crédito 0. **El admin borra el pago:** crédito vuelve a 2.000 y banco +2.000 (caso real de sep-2026) |
+| 14 | **Pedido manual** (con o sin cliente vinculado) | ✔ | Valor 0 no avanza; sucursal desactivada se rechaza con mensaje | Operador ✔ | 15.000: comisión 4.500, caja igual. 6.000 vinculado: deuda del cliente 8.000 → 14.000 (fiado), caja igual |
+| 15 | **Solicitar corrección de pedido** | ✔ (solicitud → aprobación) | Sin motivo no avanza | Aprueba el admin | 15.000 → 10.000: comisión 4.500 → 3.000 |
+| 16 | **Caja: Recibo AM, Recibo PM, Cierre final** (billetes, monedas, banco) | ✔ | Sin nombre o sin banco no avanza; un turno no se repite | Operador ✔ | Conteo exacto: "cuadrada". PM con −600: descuadre registrado, saldo igual. El Cierre avanza el día operativo |
+| 17 | **D7: corregir y agregar en día cerrado** | ✔ | Campos vacíos se rechazan | Aprueba el admin | Corrección +500 por banco y movimiento olvidado −1.000 en efectivo. El conteo del Cierre no cambia, se guardan 2 correcciones y el semáforo sigue verde |
+
+### 3.4 Administración, cierre mensual y Excel
+
+| # | Formulario | Creación y edición | Validación | Permiso | Efecto (a mano = sistema) y reflejo |
+|---|---|---|---|---|---|
+| 18 | **Sucursales**: crear, editar, activar, desactivar, probar conexión | ✔ / ✔ | Campos obligatorios vacíos no guardan; API key vacía al editar conserva la anterior | Operador sin botones y 403 | Desactivar conserva el historial. "Probar" sin red da un error controlado (tras el limitador de Shipday) |
+| 19 | **Usuarios**: crear, cambiar rol, desactivar, eliminar | ✔ / ✔ | Clave de menos de 6 caracteres se rechaza; **no puede quedar sin admin activo** | Solo admin (operador 403) | Cambiar rol invalida la sesión previa (401). Usuario inactivo no entra (401). *(Defecto D-B4 corregido)* |
+| 20 | **Configuración**: marca, capital inicial, porcentaje de nómina | ✔ / ✔ | Capital bloqueado si ya hay un Cierre; porcentaje mayor que 100 se limita | Solo admin (403) | Capital 100.000 → 150.000 sin cierres: esperado +50.000; restaurado al valor exacto |
+| 21 | **Equipos**: autorizar con nombre, rechazar, renombrar, cerrar sistema, bloquear, reautorizar, eliminar | ✔ | El PC servidor no se puede bloquear ni eliminar | Solo admin (403) | Estados persistidos. *(Defecto D-B5 corregido: error falso al eliminar)* |
+| 22 | **Trabajadores**: crear administrativo o domiciliario, activo/inactivo | ✔ / — (sin renombrar ni eliminar en la interfaz) | Nombre vacío no crea | Eliminar solo admin (403) | — |
+| 23 | **Pago de nómina** | ✔ | Monto 0 no avanza | Operador ✔ | 12.000 en efectivo: −12.000, movimiento confirmado de categoría 15; Reportes: nómina 12.000 |
+| 24 | **Pago de domiciliario desde Trabajadores** (otro asistente) | ✔ | Base mayor que la pendiente bloquea Siguiente | Operador ✔ | 1.200 a comisión + 600 a base por banco: +1.800, comisión 0, base 5.000. La ficha ahora muestra la base sin devolver (D-B6) |
+| 25 | **Libreta**: crear, editar, eliminar | ✔ / ✔ | Nota vacía no se agrega | Operador ✔ | Persiste al recargar; la actividad aparece en Equipos |
+| 26 | **Asistente de cierre mensual** | ✔ | Sin confirmar no cierra; el reparto se completa solo | Solo admin (403) | Pendientes 10.000 + 72.600 + 23.000 = 105.600. Objetivo 200.000 deja 94.400, repartidos 47.200 / 47.200. Totales del cierre = SQL |
+| 27 | **Botón Excel** | ✔ | — | ✔ | Genera `cashbuddy-2026-10.xlsx` de 16.829 bytes con 6 hojas, igual al endpoint; cifras iguales al reporte |
+
+## 4. Recorrido financiero completo (interfaz, importes calculados aparte)
+
+Copia de la DEMO. Punto de partida: efectivo **108.600** · banco **136.200** · A [comisión 0, crédito 0, base 5.000] · B [0, 2.000, 6.000].
+
+| Tramo | Acción en la interfaz | Esperado a mano | Sistema |
 |---|---|---|---|
-| Dashboard, Caja, Arqueos→Caja, Banco, Clientes, Configuración (solo lectura para operador), Domiciliarios, Gastos, Historial, Libreta, Movimientos, Nómina→Trabajadores, Bases, Conversiones→Banco, Deudas, Domiciliarios Shipday, Pedidos, Reportes, Sucursales, Trabajadores, Turnos→Caja | ✔ 21 | ✔ 21 | Sin errores |
-| Equipos | ✔ tras corrección | ✔ | **Defecto corregido:** el operador recibía 403 y el aviso "Error al cargar equipos" |
-| Solicitudes | ✔ tras corrección | ✔ | **Defecto corregido:** el operador recibía 403 y "Error al cargar solicitudes" antes de ser redirigido |
+| J1 | Pedido manual 20.000 a B (comisión 6.000 neteada con el crédito de 2.000) | B [4.000, 0, 6.000]; caja igual | ✔ |
+| J2 | Entregar base 10.000 en efectivo a B | Efectivo 98.600; base B 16.000 | ✔ |
+| J3 | Devolución de base 6.000 en efectivo | Efectivo 104.600; base B 10.000 | ✔ |
+| J4 | Ingreso por banco 9.000 → Descontar de deuda (5.000 a base) | Banco 145.200; B [0, 0, 5.000] | ✔ |
+| J5 | Cliente paga toda su deuda, 14.000 en efectivo | Efectivo 118.600; deuda 0 | ✔ |
+| J6 | Gasto 3.000 por banco, aprobado | Banco 142.200 | ✔ |
+| J7 | Salida 20.000 por banco con contraparte en efectivo | Efectivo 138.600 · banco 122.200 | ✔ |
+| — | Movimientos (por medio) y Resumen del día | +38.600 / +22.200; total +60.800 | ✔ (antes del arreglo D-B2 daba +4.000 / +3.000 de más) |
+| J8 | Recibo AM (cuadrado), PM (−600), Cierre final (cuadrado) | Diferencia 0 / 0; Historial verde | ✔ |
+| J9 | D7: gasto 3.000 → 2.500 y movimiento olvidado −1.000 en efectivo | Esperado 137.600 / 122.700; conteo 138.600 intacto | ✔ |
+| J10 | Cierre mensual de octubre (asistente) | Ver la tabla de abajo | ✔ |
+| J11 | Botón Excel | Cifras iguales al cierre | ✔ |
+| J12 | Tras el cierre de mes: aprobar eliminación, capital, base nueva | Rechazado con mensaje; dinero igual | ✔ |
 
-## 4. Flujos de interfaz
+**Cifras del cierre mensual de octubre:**
+- **Pedidos:** 31, por 348.000.
+- **Comisión:** 104.400 (348.000 × 30 %).
+- **Bases:** entregadas 50.000, devueltas 40.000, pendientes 10.000 (A 5.000 y B 5.000).
+- **Comisiones pendientes:** 72.600.
+- **Clientes:** 23.000.
+- **Gastos:** 16.000 en efectivo + 2.500 por banco.
+- **Nómina:** 12.000.
+- **Utilidad:** 73.900.
 
-| Flujo | Cómo se verificó | Resultado |
-|---|---|---|
-| Login (operador y admin; correo de ejemplo neutro) | Navegador | ✔ (corregido: el ejemplo mostraba el admin por defecto) |
-| Configuración: operador en solo lectura; error del servidor sin falso "guardado" | Navegador (M02) | ✔ |
-| **Pago dividido F14** (Deudas → Registrar pago → "A base" 5.000) | Clic real, servidor temporal | ✔ base 15.000 → 10.000, comisión 0, efectivo +5.000 |
-| Deudas: columnas Comisiones / Base / Total informativo | Navegador | ✔ $0 / $15.000 / $15.000 |
-| **D7: solicitar agregar a un día cerrado** (Historial) | Clic real | ✔ solicitud "Agregar egreso efectivo $2.000…" |
-| **D7: aprobar** (Solicitudes → "Aprobar y aplicar") | Clic real | ✔ efectivo −2.000; Cierre conserva 111.600 / dif. 0; corrección registrada |
-| D7: Historial muestra conteo original + corrección + esperado corregido | Navegador | ✔ |
-| Ingreso bancario desde el formulario (fecha del día) | Navegador (Codex UI01) | ✔ |
-| Lectura de Dashboard, Historial, Deudas y Reportes contra el libro | Navegador | ✔ |
+**Contraste final con SQL directo** sobre la copia (no pasa por la lógica del sistema): pedidos 31 / 348.000 / 104.400; Demo A 24.000 → 7.200; Demo B 42.000 → 12.600; deuda de comisiones 72.600; bases 50.000 / 40.000; gastos 16.000 + 2.500; nómina 12.000; clientes 23.000. **Todo coincide.**
 
-**Formularios ejercitados solo por su endpoint (15).** Cada endpoint está verificado al 100 %, pero el formulario no se pulsó individualmente:
-- entregar y devolver base;
-- turno por hora y cobro por hora;
-- crear cliente, deuda y abono;
-- conversión;
-- gasto;
-- editar movimiento;
-- crear y editar sucursal;
-- usuarios;
-- acciones de equipos;
-- trabajadores;
-- libreta;
-- botón de Excel;
-- asistente de cierre mensual;
-- **"Descontar de deuda" con reparto** (nuevo campo "Parte a devolver base").
+**Comprobación a mano de la deuda de comisiones (72.600):**
+- Los domiciliarios reales suman 84.600 de comisión, menos 12.000 del pago ficticio del pedido #22.
+- A pagó 6.000 + 1.200 = 7.200, su comisión completa.
+- B tenía 12.600 = 3.600 pagados antes + 5.000 + 4.000 (el crédito de 2.000 se consumió en J1).
 
-Quedan cubiertos en la guía manual para que el propietario los pulse.
+## 5. Defectos encontrados al pulsar los formularios (corregidos y repetidos)
 
-## 5. Procesos automáticos y aplicación de Windows
+| ID | Defecto | Corrección | Prueba que lo repite |
+|---|---|---|---|
+| D-B1 | Crear cliente con deuda inicial **sacaba efectivo por defecto**, aunque fuera un fiado | Elegir medio es obligatorio: efectivo, transferencia o "No sale dinero (fiado)" | Clic: fiado sin cambio de caja; préstamo −5.000 por banco |
+| D-B2 | Movimientos contaba una base mixta en un solo medio y una conversión de un solo lado: los totales por medio no cuadraban (+4.000 / +3.000) | Desglose `parts` por medio en la API; filtros y totales por parte | MOV-PARTS (API) + clic (+10.600 / +28.400 exactos) |
+| D-B3 | Banco mostraba "Efectivo→Banco" al revés ("Entró por efectivo") e inflaba el balance neto | Etiqueta y medio iguales al backend; la conversión cuenta en ambos lados | Clic |
+| D-B4 | El admin podía desactivarse, quitarse el rol o eliminarse aunque fuera el **único** admin, y el sistema quedaba sin administrador | Siempre debe quedar al menos un admin activo | USR-ADMIN (API) + clic |
+| D-B5 | Eliminar equipo, desactivar sucursal, eliminar conversión o eliminar nota mostraban "Unexpected end of JSON input" aunque la acción sí se aplicaba | El cliente web acepta respuestas 204 | Clic: aviso correcto en los 3 casos |
+| D-B6 | La ficha del domiciliario en Trabajadores no mostraba la base sin devolver y llamaba "Deuda pendiente" a la comisión | Bases recibidas / devueltas / **sin devolver** / deuda por comisiones | Clic |
+| D-B7 | Mensajes de error que decían "D7 sigue pendiente" | Texto actualizado | — |
+| D-B8 | La confirmación del abono no decía por qué medio entraba el dinero; Bases decía "Registrar pago" para una devolución | Fila "Entra a" y botones renombrados | Clic |
+
+## 6. Observaciones para el propietario (no se cambiaron: son decisiones de negocio)
+
+1. **Registros después del Cierre, antes de medianoche:** se rechazan con un mensaje claro hasta el día siguiente o hasta una solicitud aprobada. Aplica a banco, bases y pedidos manuales.
+   - No se pierde dinero.
+   - Pero el encabezado ya muestra el día operativo (mañana) y el formulario de Banco propone la fecha del calendario sin permitir elegir mañana.
+   - La regla "cargar en su día" que aprobó el propietario era para los pedidos de **Shipday**. ¿Deben los pedidos manuales seguirla también?
+2. **Turno por hora:** un turno de 10:00 a 09:00 se toma como nocturno de 23 h sin ningún aviso.
+3. **Funciones que existen en la API pero no en la interfaz:**
+   - editar las tarifas de un cliente por hora;
+   - renombrar o eliminar un trabajador.
+4. **Recibo AM:** el texto "Persona que recibe el turno" se presta a confusión. El Recibo PM lo trata como quien cerró la mañana.
+5. **Avisos de error:** se muestran con el prefijo "Error: ".
+
+## 7. Escritorio e integración
 
 | Proceso | Verificación | Estado |
 |---|---|---|
-| Sondeo rápido, de recuperación y reconciliación profunda | `syncBranch`/`reconcileBranch` con Shipday simulado + importación real de solo lectura | ✔ (corregido: un pedido cerrado abortaba el ciclo) |
-| Autosanación del stub $0 | DOM01 | ✔ |
-| Lápida de pedidos eliminados | Baterías de Codex | ✔ |
-| Cola financiera (tiempo máximo, 503 ante candado ajeno) | claude-final | ✔ |
-| Arranque: bloqueo si faltan migraciones | codex-migration34-compiled | ✔ |
 | CashBuddy.exe: abrir, salud, un solo backend | Procesos y registro | ✔ |
-| Watchdog: reinicio tras caída | Backend terminado a la fuerza → nuevo en ~5 s | ✔ |
-| Persistencia tras reinicio | Saldos DEMO iguales tras reiniciar | ✔ |
-| Registro sin ruido de 401 | 45 → 0 líneas | ✔ (corregido) |
-| Ventana WebView2 en pantalla | — | **Bloqueado**: control de pantalla denegado |
+| Watchdog | Backend terminado → nuevo en ~5 s. Se repitió hoy a las 17:44 para cargar la compilación nueva en la DEMO; salud OK y saldos DEMO 118.600 / 122.400 intactos | ✔ |
+| Persistencia tras reinicio | Saldos iguales | ✔ |
+| Ventana WebView2 en pantalla | — | **No verificada visualmente** (control de pantalla denegado) |
+| Shipday: sondeos, autosanación, lápida, pedido de mes cerrado | Simulado + importación real de solo lectura (ronda anterior) | ✔ |
+| Shipday en esta ronda | Red externa bloqueada; "Probar conexión" da un error controlado; ninguna llamada real | ✔ |
+| Webhook Cloudflare | No se tocó (apunta a producción) | — |
 
-## 6. Defectos encontrados en esta auditoría (todos corregidos y repetidos)
-
-| ID | Defecto | Prueba |
-|---|---|---|
-| D-A1 | Un pedido de un período cerrado abortaba todo el ciclo del sondeo | SYNC01–03, ORD-SYNC2 |
-| D-A2 | API key inválida → 500 | SHIP01 |
-| D-A3 | 401 cada 8 s en el registro | Medición del registro |
-| D-A4 | El login sugería el admin por defecto | Navegador |
-| D-A6 | La guardia de pedidos por instante del cierre de mes perdía pedidos del mes abierto | ORD-SYNC2 |
-| D-A7 | Historial, cierre mensual y Caja calculaban fechas en UTC o con la zona del PC | Revisión + tipos |
-| D-A8 | Equipos y Solicitudes consultaban rutas de admin con sesión de operador | Navegador |
-| D-A9 | Guion de migración 34 de Codex con base vieja sucia y conteo fijo | run-migration34-final |
-
-## 7. Pruebas de Codex ajustadas por las decisiones del propietario
-
-Estas pruebas fijaban una regla que el propietario reemplazó. La intención protegida se conserva en cada una:
-
-| Prueba | Regla anterior | Regla nueva (14-oct) |
-|---|---|---|
-| R5, R7, N3 | Base dentro de la deuda; indicador de bases solo del mes | F14 (base aparte; saldo anterior + entregadas − devueltas) |
-| 5 de financial-acceptance | Pago primero a base | F14 (el operador reparte) |
-| http-acceptance | Total = base + comisión | F14 (− crédito); fila de Excel renombrada |
-| LOCK11, E02, INTEGRATED | Solicitud sobre día cerrado rechazada | D7 (se aplica y se registra; el conteo no cambia) |
-| LOCK12, LOCK17, LOCK19 | Pedido tras el Cierre rechazado | Se carga en su día; un mes cerrado sigue bloqueando |
-
-## 8. Totales de ejecución (código final)
+## 8. Totales de ejecución (código final de esta ronda)
 
 | Batería | Resultado |
 |---|---|
-| Financiera (45) / bloqueadores (18) / Claude completa, incluida la de 2 min (15) | 45 / 18 / 15 |
-| 12 defectos (26) / Codex independiente + bordes + definitiva (75) / migraciones (2) | 26 / 75 / 2 |
-| Auditoría final (5) / F14-D7-pedidos (27) / cobertura (28 pasos, 124 rutas) | 5 / 27 / 28 |
-| Migración 34 (3 guiones) / migración F14 con datos heredados / escenario DEMO con Cierre / conciliación peso a peso | ✔ / ✔ / ✔ / ✔ |
+| Financiera / bloqueadores / Claude completa / 12 defectos / Codex definitiva / migraciones / auditoría / cobertura | ver §8.1 (regresión completa repetida tras los arreglos) |
+| F14-D7-pedidos + MOV-PARTS + USR-ADMIN | 29 / 29 |
+| Formularios con clic real | 27 / 27 |
+| Recorrido financiero | 12 tramos ✔, contraste SQL ✔ |
 | Tipos API y web / compilación de producción | 0 errores / correcta |
+
+### 8.1 Regresión completa
+
+Se repitió completa, sobre bases temporales nuevas, después de todos los arreglos de esta ronda (`run-all.sh`). **11 de 11 grupos con salida 0:**
+
+| Grupo | Resultado |
+|---|---|
+| Financiera (audit-clients, financial-acceptance, http-acceptance) | 0 fallas |
+| Claude completa | 15 / 15 |
+| 12 defectos | 26 / 26 |
+| Bloqueadores post-Claude | 0 fallas |
+| Migración de actualización (instalación limpia + 33→36) | ✔ |
+| Codex independiente / bordes / definitiva | 14 / 14 · 8 / 8 · 53 / 53 |
+| Migración 34 (normal, recuperación, compilada) | 3 / 3 |
+| Auditoría final | 5 / 5 |
+| F14-D7-pedidos + MOV-PARTS + USR-ADMIN | 29 / 29 |
+| Migración F14 con datos heredados | ✔ (34 → 36) |
+| Cobertura de rutas | 28 / 28 pasos, 124 rutas |

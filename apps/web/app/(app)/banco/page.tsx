@@ -97,8 +97,11 @@ export default function BancoPage() {
   useLive(() => load(true), 5000);
 
   const rows = buildRows(movements);
-  const ingresos = movements.filter(m => m.type === "ingreso" || m.type === "consignacion").reduce((s, m) => s + m.amount, 0);
-  const egresos  = movements.filter(m => m.type === "egreso" || m.type === "retiro").reduce((s, m) => s + m.amount, 0);
+  // Una conversión mueve el mismo valor entre efectivo y banco: cuenta en ambos lados y
+  // por sí sola no descuadra el balance neto.
+  const conversiones = movements.filter(m => m.type === "consignacion" || m.type === "retiro").reduce((s, m) => s + m.amount, 0);
+  const ingresos = movements.filter(m => m.type === "ingreso").reduce((s, m) => s + m.amount, 0) + conversiones;
+  const egresos  = movements.filter(m => m.type === "egreso").reduce((s, m) => s + m.amount, 0) + conversiones;
   const balance  = ingresos - egresos;
   // Movimiento asignado a domiciliario = ya tiene contraparte implícita, no cuenta como pendiente.
   // Movimiento marcado explícitamente "sin contraparte" tampoco cuenta como pendiente (#11).
@@ -250,7 +253,9 @@ export default function BancoPage() {
                       <p className="text-xs text-muted-foreground mt-1">
                         🗓️ {fmtDate(m.date)}
                         {isMixed ? ` · 💵 ${formatCOP(m.cashPart ?? 0)} efectivo + 🏦 ${formatCOP(m.bankPart ?? 0)} transferencia` : ""}
-                        {!isMixed && m.medium ? ` · ${m.type === "ingreso" || m.type === "consignacion" ? "Entró" : "Salió"} por ${m.medium === "cash" ? "efectivo" : "transferencia"}` : ""}
+                        {m.source === "conversion"
+                          ? (m.type === "consignacion" ? " · Salió efectivo, entró al banco" : " · Salió del banco, entró efectivo")
+                          : !isMixed && m.medium ? ` · ${m.type === "ingreso" ? "Entró" : "Salió"} por ${m.medium === "cash" ? "efectivo" : "transferencia"}` : ""}
                         {m.createdByName ? ` · 👤 Registró: ${m.createdByName}` : ""}
                         {m.deviceName ? ` · 🖥️ ${m.deviceName}` : ""}
                         {m.reference ? ` · Ref: ${m.reference}` : ""}{m.branchName ? ` · ${m.branchName}` : ""}

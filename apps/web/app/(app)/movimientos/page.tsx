@@ -47,11 +47,15 @@ export default function MovimientosPage() {
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [date]);
   useLive(() => load(true), 5000);
 
+  // Un registro puede mover efectivo y banco a la vez (base mixta, cobro dividido,
+  // conversión): filtros y totales van por PARTE, para que cuadren con la caja real.
+  const partsOf = (m: UnifiedMovement) => m.parts ?? [{ type: m.type, medium: m.medium, amount: m.amount }];
+  const partMatches = (p: { type: string; medium: string }) =>
+    (filter !== "ingreso" || p.type === "ingreso") && (filter !== "egreso" || p.type === "egreso") &&
+    (filter !== "cash" || p.medium === "cash") && (filter !== "bank" || p.medium === "bank");
+
   const filtered = movements.filter(m => {
-    if (filter === "ingreso" && m.type !== "ingreso") return false;
-    if (filter === "egreso" && m.type !== "egreso") return false;
-    if (filter === "cash" && m.medium !== "cash") return false;
-    if (filter === "bank" && m.medium !== "bank") return false;
+    if (!partsOf(m).some(partMatches)) return false;
     if (sourceFilter !== "all" && m.source !== sourceFilter) return false;
     if (q) {
       const sq = q.toLowerCase();
@@ -62,8 +66,9 @@ export default function MovimientosPage() {
     return true;
   });
 
-  const totalIngresos = filtered.filter(m => m.type === "ingreso").reduce((s, m) => s + m.amount, 0);
-  const totalEgresos  = filtered.filter(m => m.type === "egreso").reduce((s, m) => s + m.amount, 0);
+  const matchedParts = filtered.flatMap(m => partsOf(m).filter(partMatches));
+  const totalIngresos = matchedParts.filter(p => p.type === "ingreso").reduce((s, p) => s + p.amount, 0);
+  const totalEgresos  = matchedParts.filter(p => p.type === "egreso").reduce((s, p) => s + p.amount, 0);
   const balance = totalIngresos - totalEgresos;
 
   const sources = [...new Set(movements.map(m => m.source))].filter(Boolean);
@@ -163,7 +168,9 @@ export default function MovimientosPage() {
                   {m.date} {m.time}
                   {m.relatedName ? ` · ${m.relatedName}` : ""}
                   {" · "}{m.category}
-                  {" · "}{m.medium === "cash" ? "💵 Efectivo" : "🏦 Banco"}
+                  {" · "}{m.parts
+                    ? m.parts.map(p => `${p.medium === "cash" ? "💵 Efectivo" : "🏦 Banco"} ${p.type === "ingreso" ? "+" : "−"}${formatCOP(p.amount)}`).join(" / ")
+                    : m.medium === "cash" ? "💵 Efectivo" : "🏦 Banco"}
                 </p>
                 <p className="text-[11px] text-muted-foreground/80">
                   👤 Realizado por: <span className="font-semibold">{m.createdByName ?? "—"}</span>

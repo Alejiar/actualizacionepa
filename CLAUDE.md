@@ -207,8 +207,10 @@ día actual — así un cierre hecho a las 00:30 (ya "mañana" en el calendario)
 sigue encontrando el día de ayer disponible para cerrarlo.
 
 - `getCurrentOperatingDate()` en `shift-close.service.ts` calcula esto: el
-  día siguiente al último Cierre registrado, sin adelantarse más allá de
-  hoy.
+  día siguiente al último Cierre registrado. **Sí puede quedar en "mañana"**
+  tras cerrar hoy antes de medianoche (el tope a "hoy" se quitó a propósito en
+  63b0bdb, "día operativo manual"). En ese lapso, todo registro de dinero
+  fechado hoy se rechaza (día cerrado) salvo por solicitud aprobada (D7).
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir
   este valor a `/shifts/current-date` — nunca calcular "hoy" directo.
 - `expectedAmount`/`bankExpected` de un cierre **siempre** los calcula el

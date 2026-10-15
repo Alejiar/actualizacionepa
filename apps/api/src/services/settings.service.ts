@@ -32,7 +32,7 @@ export async function updateSettings(patch: UpdateSettingsRequest): Promise<Sett
     const changingCapital = (patch.initialCash !== undefined && patch.initialCash !== current?.initialCash)
       || (patch.initialBank !== undefined && patch.initialBank !== current?.initialBank);
     if (changingCapital && await prisma.shiftClose.count()) {
-      throw conflict("Cambiar el capital inicial alteraría días cerrados. Usa el cierre mensual para el nuevo capital; D7 sigue pendiente.");
+      throw conflict("Cambiar el capital inicial alteraría días cerrados. Para ajustar la caja registra un movimiento, o una corrección aprobada si el día ya está cerrado.");
     }
     return prisma.settings.upsert({
     where: { id: SINGLETON_ID },

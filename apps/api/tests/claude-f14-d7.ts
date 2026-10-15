@@ -201,6 +201,39 @@ async function main() {
       f.estados = st.map(x => x.status).sort(); assert.deepEqual(f.estados, [201, 400]);
       assert.equal(await basePending(A), 20000); assert.deepEqual(await bal(), { cash: 80000, bank: 100000 });
     });
+    await check("MOV-PARTS", "Movimientos: base mixta, cobro dividido y conversión cuadran por medio con la caja real", async f => {
+      await ok(`/sd/bases/${A.id}/give`, "POST", { cashAmount: 7000, bankAmount: 3000 });
+      await ok("/sd/conversions", "POST", { branchId: branch.id, amount: 7000, type: "efectivo_a_banco" });
+      const cli = await ok("/clients", "POST", { name: "Cliente partes" });
+      await ok(`/clients/${cli.id}/debt`, "POST", { description: "Fiado", amount: 9000 });
+      await ok(`/clients/${cli.id}/pay`, "POST", { cashAmount: 5000, bankAmount: 4000 });
+      // Esperado calculado a mano: efectivo −7.000 −7.000 +5.000; banco −3.000 +7.000 +4.000.
+      const exp = { cash: 100000 - 7000 - 7000 + 5000, bank: 100000 - 3000 + 7000 + 4000 };
+      assert.deepEqual(await bal(), exp);
+      const movs = await ok(`/movements/unified?from=${today}&to=${today}`) as any[];
+      const net = { cash: 0, bank: 0 };
+      for (const m of movs) for (const pt of m.parts ?? [{ type: m.type, medium: m.medium, amount: m.amount }]) net[pt.medium as "cash" | "bank"] += pt.type === "ingreso" ? pt.amount : -pt.amount;
+      f.net = net; f.parts = movs.filter(m => m.parts).map(m => [m.source, m.parts]);
+      assert.deepEqual(net, { cash: exp.cash - 100000, bank: exp.bank - 100000 });
+      // El cobro dividido ya se guarda como un ClientDebtPayment por medio; la base mixta y la
+      // conversión son un solo registro con dos medios y por eso llevan desglose.
+      assert.deepEqual(f.parts.map((x: any) => x[0]).sort(), ["Bases", "Conversión"]);
+    });
+    await check("USR-ADMIN", "Nunca queda el sistema sin un administrador activo (desactivar, quitar rol, eliminar)", async f => {
+      const r1 = await api(`/users/${admin.id}`, "PATCH", { active: false }, admin);
+      const r2 = await api(`/users/${admin.id}`, "PATCH", { role: "user" }, admin);
+      const r3 = await api(`/users/${admin.id}`, "DELETE", undefined, admin);
+      f.solo = [r1.status, r2.status, r3.status];
+      assert.deepEqual(f.solo, [400, 400, 400]);
+      assert.equal((await p.user.findUniqueOrThrow({ where: { id: admin.id } })).active, true);
+      // Con un segundo admin activo sí se permite (y el operador nunca puede: 403).
+      const admin2 = await p.user.create({ data: { email: "admin2@f14.test", name: "Admin 2", role: "admin", passwordHash: "x" } });
+      assert.equal((await api(`/users/${admin2.id}`, "PATCH", { active: false }, oper)).status, 403);
+      assert.equal((await api(`/users/${admin2.id}`, "PATCH", { active: false }, admin)).status, 200);
+      assert.equal((await api(`/users/${admin.id}`, "PATCH", { active: false }, admin)).status, 400, "admin2 ya está inactivo");
+      await p.user.update({ where: { id: admin2.id }, data: { active: true } });
+      assert.equal((await api(`/users/${admin2.id}`, "DELETE", undefined, admin)).status, 200);
+    });
     await check("F14-INACT", "Domiciliario inactivo con base pendiente sigue visible para cobrarle", async () => {
       await ok(`/sd/bases/${A.id}/give`, "POST", { cashAmount: 5000 });
       await p.driver.update({ where: { id: A.id }, data: { active: false } });

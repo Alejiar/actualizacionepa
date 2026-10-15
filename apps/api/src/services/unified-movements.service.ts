@@ -19,6 +19,19 @@ export interface UnifiedMovement {
   entityType: string;    // modelo real para solicitudes de cambio
   entityId: string;      // ID real del registro
   editableDescription: boolean; // si el campo descripción es editable
+  // Desglose por medio cuando un solo registro mueve efectivo Y banco (base mixta,
+  // cobro dividido, conversión). Sin él, la fila se cuenta entera en `medium` y los
+  // totales por medio de Movimientos no cuadran con la caja real.
+  parts?: MovementPart[];
+}
+
+export interface MovementPart { type: "ingreso" | "egreso"; medium: "cash" | "bank"; amount: number }
+
+function splitParts(type: "ingreso" | "egreso", cash: number, bank: number, total: number): MovementPart[] | undefined {
+  if (cash > 0 && bank > 0 && cash + bank === total) {
+    return [{ type, medium: "cash", amount: cash }, { type, medium: "bank", amount: bank }];
+  }
+  return undefined;
 }
 
 function iso(d: Date): string { return toBogotaDateStr(d); }
@@ -152,6 +165,9 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       description: c.notes || (esBancoAEfectivo ? "Banco → Efectivo" : "Efectivo → Banco"),
       category: esBancoAEfectivo ? "Banco→Efectivo" : "Efectivo→Banco",
       source: "Conversión",
+      parts: esBancoAEfectivo
+        ? [{ type: "egreso", medium: "bank", amount: c.amount }, { type: "ingreso", medium: "cash", amount: c.amount }]
+        : [{ type: "egreso", medium: "cash", amount: c.amount }, { type: "ingreso", medium: "bank", amount: c.amount }],
       relatedName: c.driverName ?? c.branch?.name,
       createdByName: c.userName,
       deviceName: c.deviceName,
@@ -199,6 +215,7 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       type: b.type === "entrega" ? "egreso" : "ingreso",
       medium: b.bankAmount > 0 && b.cashAmount === 0 ? "bank" : "cash",
       amount: b.amount,
+      parts: splitParts(b.type === "entrega" ? "egreso" : "ingreso", b.cashAmount, b.bankAmount, b.amount),
       description: `${b.type === "entrega" ? "Base entregada a" : "Base pagada por"} ${b.driver?.name ?? "domiciliario"}${b.notes ? ` — ${b.notes}` : ""}`,
       category: b.type === "entrega" ? "Base entregada" : "Base cobrada",
       source: "Bases",
@@ -244,6 +261,7 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       type: "ingreso",
       medium: d.paidBank > 0 && d.paidCash === 0 ? "bank" : "cash",
       amount: d.paidAmount,
+      parts: splitParts("ingreso", d.paidCash, d.paidBank, d.paidAmount),
       description: `Cobro deuda: ${d.description} — ${d.client?.name ?? "cliente"}`,
       category: "Cobro cliente",
       source: "Clientes",
