@@ -4,7 +4,7 @@ import { WizardShell } from "./WizardShell";
 import { MoneyInput } from "../MoneyInput";
 import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
-import { todayBogota } from "@/lib/format";
+import { useDay } from "@/lib/day-context";
 
 type Mode = "new_client" | "add_debt" | "pay_debt";
 
@@ -23,7 +23,9 @@ export function ClientDebtWizard({ open, onOpenChange, mode, client, debt, onDon
   const [phone, setPhone] = useState("");
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState(0);
-  const [debtDate, setDebtDate] = useState(() => todayBogota());
+  // NEW02: la deuda es del día operativo (la caja abierta), no del calendario.
+  const { operatingDay } = useDay();
+  const [debtDate, setDebtDate] = useState(() => operatingDay);
   const [payMedium, setPayMedium] = useState<"cash" | "bank">("cash");
   // De dónde sale el dinero de la deuda: préstamo en efectivo/banco, o "none" = fiado (no sale
   // dinero; p. ej. un domicilio que quedó debiendo). Sin valor por defecto: el operador debe
@@ -33,7 +35,7 @@ export function ClientDebtWizard({ open, onOpenChange, mode, client, debt, onDon
   const mediumLabel = (m: typeof debtMedium) => m === "cash" ? "💵 Efectivo" : m === "bank" ? "🏦 Transferencia" : "📝 No sale dinero (fiado)";
   const [saving, setSaving] = useState(false);
 
-  function reset() { setStep(1); setName(""); setPhone(""); setDescription(""); setAmount(0); setPayMedium("cash"); setDebtMedium(null); setDebtDate(todayBogota()); }
+  function reset() { setStep(1); setName(""); setPhone(""); setDescription(""); setAmount(0); setPayMedium("cash"); setDebtMedium(null); setDebtDate(operatingDay); }
   function close() { onOpenChange(false); setTimeout(reset, 250); }
 
   const totalSteps = mode === "new_client" ? 3 : mode === "add_debt" ? 3 : 2;
@@ -197,7 +199,7 @@ export function ClientDebtWizard({ open, onOpenChange, mode, client, debt, onDon
           </div>
           <div>
             <label className="text-xs text-muted-foreground font-medium">Fecha de la deuda</label>
-            <input type="date" value={debtDate} max={todayBogota()}
+            <input type="date" value={debtDate} max={operatingDay}
               onChange={e => setDebtDate(e.target.value)}
               className="w-full mt-1 glass rounded-2xl px-5 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
           </div>

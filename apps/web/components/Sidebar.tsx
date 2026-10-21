@@ -37,7 +37,9 @@ export function Sidebar({ mobileOpen = false, onClose }: SidebarProps) {
     if (!isAdmin) return;
     const loadCount = () => {
       api.getEditRequestCount().then(r => setPendingRequests(r.count)).catch(() => {});
-      api.getPendingMovements().then(m => setPendingExpenses(m.length)).catch(() => {});
+      // Solo gastos (3/4): es lo que lista Gastos. Una comisión manual pendiente se liquida en
+      // Trabajadores; contarla aquí mostraba un aviso sin fila que atender (AIF13).
+      api.getPendingMovements().then(m => setPendingExpenses(m.filter(x => x.category === 3 || x.category === 4).length)).catch(() => {});
       api.getDevicePendingCount().then(r => setPendingDevices(r.count)).catch(() => {});
     };
     loadCount();
@@ -107,7 +109,7 @@ export function Sidebar({ mobileOpen = false, onClose }: SidebarProps) {
           </div>
           <div className="min-w-0">
             <div className="font-bold leading-none truncate">{brand}</div>
-            <div className="text-xs text-muted-foreground mt-0.5 truncate">{company} · Admin</div>
+            <div className="text-xs text-muted-foreground mt-0.5 truncate">{company} · {isAdmin ? "Admin" : "Operador"}</div>
           </div>
         </div>
         {/* Cerrar — solo móvil */}

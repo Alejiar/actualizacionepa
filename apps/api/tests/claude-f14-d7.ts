@@ -336,7 +336,10 @@ async function main() {
     });
     await check("D7-MES", "Mes cerrado: la solicitud no se aplica y queda pendiente", async f => {
       const m = await ok("/movements", "POST", { date: prevMonthLast, category: 1, type: "ingreso", medium: "cash", amount: 10000 }, admin);
-      await closeDay(prevMonthLast); await closes.closeMonth(prevMonthLast.slice(0, 7));
+      await closeDay(prevMonthLast);
+      // NEW10: el mes solo se cierra con la caja al día (día operativo = hoy).
+      for (let d = dayBefore(prevMonthLast, -1); d < today; d = dayBefore(d, -1)) await closeDay(d);
+      await closes.closeMonth(prevMonthLast.slice(0, 7));
       const req = await ok("/edit-requests", "POST", { entityType: "Movement", entityId: m.id, entityLabel: "x", changes: { amount: { old: "10000", new: "1" } }, reason: "x" });
       f.status = (await api(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin)).status;
       assert.equal(f.status, 409);

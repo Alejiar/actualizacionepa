@@ -5,21 +5,34 @@
 // Se reusa el getToken de ./api a propósito: antes este archivo tenía su propia copia
 // leyendo localStorage, y al cambiar el almacenamiento del token en un solo lado las
 // dos mitades de la app habrían quedado con sesiones distintas.
-import { getToken, setToken } from "./api";
+import { getToken, NETWORK_ERROR, setToken } from "./api";
 import { getDeviceId } from "./device-id";
+import { forgetKey, rememberUnanswered, retryKeyFor } from "./retry-key";
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const deviceId = getDeviceId();
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(deviceId ? { "X-Device-Id": deviceId } : {}),
-      ...(init.headers ?? {}),
-    },
-  });
+  const method = (init.method ?? "GET").toUpperCase();
+  // NEW05: un POST reenviado tras un corte sin respuesta reutiliza su clave (ver retry-key.ts).
+  const signature = `${method} ${path} ${typeof init.body === "string" ? init.body : ""}`;
+  const retryKey = method === "POST" ? retryKeyFor(signature) : null;
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(deviceId ? { "X-Device-Id": deviceId } : {}),
+        ...(retryKey ? { "Idempotency-Key": retryKey } : {}),
+        ...(init.headers ?? {}),
+      },
+    });
+  } catch {
+    if (retryKey) rememberUnanswered(signature, retryKey);
+    throw new Error(NETWORK_ERROR);
+  }
+  if (retryKey) forgetKey(signature);
   // Sesión caída o token vencido: mandar al login, igual que hace ./api. Sin esto, la
   // mitad Shipday de la app se quedaba mostrando errores sueltos con la sesión muerta.
   if (res.status === 401 && typeof window !== "undefined") {
@@ -344,6 +357,8 @@ export interface UnifiedMovement {
   editableDescription: boolean;
   /** Desglose por medio si el registro mueve efectivo y banco (base mixta, cobro dividido, conversión). */
   parts?: { type: "ingreso" | "egreso"; medium: "cash" | "bank"; amount: number }[];
+  /** "pending": registro de Caja sin confirmar; se muestra pero no suma a los totales (AIF15). */
+  status?: "pending";
 }
 
 export const getUnifiedMovements = (params?: { from?: string; to?: string; limit?: number }) => {
@@ -410,7 +425,8 @@ export const approveDevice = (id: string, name: string) =>
 export const renameDevice = (id: string, name: string) =>
   apiFetch<Device>(`/devices/${id}/rename`, { method: "PATCH", body: JSON.stringify({ name }) });
 export const blockDevice = (id: string) => apiFetch<Device>(`/devices/${id}/block`, { method: "PATCH" });
-export const unblockDevice = (id: string) => apiFetch<Device>(`/devices/${id}/unblock`, { method: "PATCH" });
+export const unblockDevice = (id: string, name?: string) =>
+  apiFetch<Device>(`/devices/${id}/unblock`, { method: "PATCH", body: JSON.stringify(name ? { name } : {}) });
 export const rejectDevice = (id: string) => apiFetch<Device>(`/devices/${id}/reject`, { method: "PATCH" });
 export const requestDeviceLogout = (id: string) => apiFetch<Device>(`/devices/${id}/logout`, { method: "POST" });
 export const deleteDevice = (id: string) => apiFetch<void>(`/devices/${id}`, { method: "DELETE" });
@@ -799,7 +815,7 @@ export const updateHourlyClient = (
   data: Partial<{ name: string; driverHourValue: number; companyHourValue: number; active: boolean }>,
 ) => apiFetch<HourlyClient>(`/hourly-clients/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 export const deleteHourlyClient = (id: string) =>
-  apiFetch<void>(`/hourly-clients/${id}`, { method: "DELETE" });
+  apiFetch<{ ok: boolean; deleted?: boolean; deactivated?: boolean }>(`/hourly-clients/${id}`, { method: "DELETE" });
 export const registerHourlyShift = (
   clientId: string,
   data: { driverId: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; confirmOvernight?: boolean },
@@ -843,6 +859,8 @@ export interface MonthlyReport {
   debtReconciliation: { total: number; basesCurrentMonth: number; basesPrevious: number; basesAllTime: number; commission: number; credit?: number };
   month: string;
   totalSales: number;
+  /** NEW03: desglose de las ventas (comisión de domicilios + ganancia de clientes por hora). */
+  sales?: { orders: number; hourly: number };
   expenses: { cash: number; bank: number; total: number };
   payroll: { cash: number; bank: number; total: number };
   bases: { previous?: number; given: number; returned: number; diff: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
@@ -949,6 +967,8 @@ export interface DaySummary {
   ingresos: number;
   egresos: number;
   comision: number;
+  /** NEW03: ganancia de la empresa en turnos por hora del día (ya incluida en netProfit). */
+  gananciaPorHora?: number;
   deudasGeneradas: number;
   deudasCobradas: number;
   finalCash: number;

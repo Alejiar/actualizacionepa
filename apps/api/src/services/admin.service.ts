@@ -3,7 +3,7 @@ import { conflict } from "../lib/errors";
 
 /**
  * Reinicia TODOS los datos operativos del sistema.
- * Borra: movimientos, días, clientes, deudas, transacciones bancarias,
+ * Borra: movimientos, días, clientes (normales y por hora con sus turnos), deudas, transacciones bancarias,
  *        conversiones, pagos y bases de domiciliarios, estadísticas diarias,
  *        cierres de turno, pedidos Shipday, cierres mensuales.
  *
@@ -25,6 +25,12 @@ export async function resetAll(): Promise<void> {
     prisma.clientDebtPayment.deleteMany({}),
     prisma.clientDebt.deleteMany({}),
     prisma.client.deleteMany({}),
+
+    // Clientes por hora: sus turnos guardan pagos/cobros (driverPaidBankTxId, paidCash,
+    // paidBank) que apuntan a transacciones bancarias que se borran abajo. Conservarlos
+    // dejaba turnos "pagados/cobrados" sin su dinero (AIF12).
+    prisma.hourlyShift.deleteMany({}),
+    prisma.hourlyClient.deleteMany({}),
 
     // Banco
     prisma.bankTransaction.deleteMany({}),

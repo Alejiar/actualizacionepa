@@ -48,6 +48,10 @@ export async function resolveDevice(req: Request): Promise<ResolvedDevice> {
   const existing = await prisma.device.findUnique({ where: { id: deviceId } });
 
   if (!existing) {
+    // La primera visita de un navegador dispara varias peticiones en paralelo (settings,
+    // workers, days…) y todas llegan aquí sin encontrar el equipo: solo una puede crearlo. Las
+    // demás chocaban con la clave única (P2002 → "Ya existe un registro con esos datos"), la
+    // carga inicial fallaba y el frontend mostraba el asistente de instalación (AIF14).
     const device = await prisma.device.create({
       data: {
         id: deviceId,
@@ -62,6 +66,11 @@ export async function resolveDevice(req: Request): Promise<ResolvedDevice> {
         userAgent: ua,
         ...(loopback ? { approvedByName: "Servidor (auto)", approvedAt: new Date() } : {}),
       },
+    }).catch(async (e: unknown) => {
+      if ((e as { code?: string })?.code !== "P2002") throw e;
+      const raced = await prisma.device.findUnique({ where: { id: deviceId } });
+      if (!raced) throw e;
+      return raced;
     });
     return gateResult(device, loopback);
   }
@@ -160,13 +169,17 @@ export async function blockDevice(id: string) {
   return prisma.device.update({ where: { id }, data: { status: "blocked" } });
 }
 
-/** Reautoriza un equipo bloqueado (conserva su nombre si ya tenía). */
-export async function unblockDevice(id: string, actor: Actor) {
+/** Reautoriza un equipo bloqueado (conserva su nombre si ya tenía). Un equipo que se rechazó
+ *  estando pendiente nunca recibió nombre: igual que en approveDevice, para operar necesita uno
+ *  (antes quedaba "approved" con name=null y operaba sin identificación — AIF11). */
+export async function unblockDevice(id: string, actor: Actor, name?: string) {
   const device = await prisma.device.findUnique({ where: { id } });
   if (!device) throw notFound("Equipo no encontrado");
+  const clean = (name ?? "").trim() || (device.name ?? "").trim();
+  if (!clean) throw badRequest("Ponle un nombre al equipo para reautorizarlo (p. ej. \"PC 1\")");
   return prisma.device.update({
     where: { id },
-    data: { status: "approved", approvedBy: actor.id, approvedByName: actor.name, approvedAt: new Date() },
+    data: { status: "approved", name: clean, approvedBy: actor.id, approvedByName: actor.name, approvedAt: new Date() },
   });
 }
 

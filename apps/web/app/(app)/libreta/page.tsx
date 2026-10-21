@@ -54,7 +54,11 @@ export default function LibretaPage() {
 
   async function saveEdit(id: string) {
     const content = editText.trim();
-    if (!content) return;
+    if (!content) {
+      // Antes retornaba en silencio y el botón parecía no hacer nada (UX01).
+      toast.error("La nota no puede quedar vacía. Escribe el contenido o pulsa Cancelar.");
+      return;
+    }
     try {
       await api.updateFieldNote(id, content);
       setEditId(null);
@@ -148,7 +152,7 @@ export default function LibretaPage() {
                     <button onClick={() => setEditId(null)} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-sm hover:bg-secondary transition">
                       <X className="h-4 w-4" /> Cancelar
                     </button>
-                    <button onClick={() => saveEdit(n.id)} className="flex items-center gap-1 bg-primary text-primary-foreground px-3 py-1.5 rounded-xl text-sm font-semibold">
+                    <button onClick={() => saveEdit(n.id)} disabled={!editText.trim()} className="flex items-center gap-1 bg-primary text-primary-foreground px-3 py-1.5 rounded-xl text-sm font-semibold disabled:opacity-40">
                       <Check className="h-4 w-4" /> Guardar
                     </button>
                   </div>

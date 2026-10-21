@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { assertOpenInstant, financialNow } from "../lib/period-guard";
+import { assertOpenInstant, moneyNow } from "../lib/period-guard";
 import { badRequest, notFound } from "../lib/errors";
 import { bogotaDayRange, todayBogota } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, bankLinkedBaseNote } from "../lib/balance-markers";
@@ -118,7 +118,7 @@ export async function registerPayment(driverId: string, amount: number, medium: 
   const { baseAlloc, commissionAlloc } = splitPayment(amount, baseAmount, basePending);
 
   // Registra UN solo movimiento (bankTransaction) como registro autoritativo de display y saldo.
-  const recordedAt = await financialNow();
+  const recordedAt = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
   // BaseTransaction y DriverPayment son contabilidad interna de la deuda del domiciliario;
   // se marcan como bank-linked para que getExpectedBalances y unified-movements los ignoren.
   let payment = null as Awaited<ReturnType<typeof prisma.driverPayment.create>> | null;
@@ -409,7 +409,7 @@ export async function payCredit(
   await assertOpenInstant(undefined, "El pago del crédito", driver.branchId);
   const creditAmount = driver.creditAmount ?? 0;
   if (creditAmount <= 0) throw badRequest("Este domiciliario no tiene crédito pendiente");
-  const recordedAt = await financialNow();
+  const recordedAt = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
 
   await prisma.$transaction(async (tx) => {
     // Egreso de la empresa hacia el domiciliario.

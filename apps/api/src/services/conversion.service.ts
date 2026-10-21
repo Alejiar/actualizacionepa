@@ -1,6 +1,6 @@
 import { assertMoney } from "../lib/money-validation";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { assertOpenInstant, financialNow, parseFinancialTimestamp } from "../lib/period-guard";
+import { assertOpenInstant, financialNow, operatingClock, parseFinancialTimestamp } from "../lib/period-guard";
 import { notFound, badRequest } from "../lib/errors";
 import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
 
@@ -35,7 +35,8 @@ export async function createConversion(input: {
   assertMoney(input.amount);
   if (input.type !== "banco_a_efectivo" && input.type !== "efectivo_a_banco") throw badRequest("Tipo de conversión inválido.");
   const now = await financialNow();
-  const when = input.date !== undefined ? parseFinancialTimestamp(input.date, now, "La conversión") : now;
+  const op = await operatingClock();
+  const when = input.date !== undefined ? parseFinancialTimestamp(input.date, now, "La conversión", op) : op.at;
   await assertOpenInstant(when, "La conversión", input.branchId);
 
   // El domiciliario es solo informativo: NO altera su deuda.

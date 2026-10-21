@@ -211,6 +211,35 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   tras cerrar hoy antes de medianoche (el tope a "hoy" se quitó a propósito en
   63b0bdb, "día operativo manual"). En ese lapso, todo registro de dinero
   fechado hoy se rechaza (día cerrado) salvo por solicitud aprobada (D7).
+- **NEW02 (decisión del dueño, 21-oct-2026): todo cuenta en el día operativo, nunca en el
+  reloj.** Si el calendario va adelante (es 21 pero la caja abierta es la del 20), todo
+  registro de dinero sin fecha (bases, pagos de domiciliarios, deudas/abonos de clientes,
+  turnos y cobros por hora, banco, conversiones, libreta, pedidos manuales) queda en el 20
+  (`moneyNow()` = fin del día operativo); si va atrás (tras el Cierre nocturno, operativo =
+  mañana) queda al inicio del día operativo. Una fecha posterior al día operativo → 400.
+  Backend: `operatingDay()` / `moneyNow()` / `operatingClock()` en `lib/period-guard.ts`;
+  frontend: `useDay().operatingDay` como fecha por defecto y máximo de los formularios. No
+  vuelvas a usar `new Date()` / `todayBogota()` para fechar dinero. Excepciones: `closedAt`
+  de `ShiftClose`/`MonthlyClose` (instante real) y pedidos sincronizados de Shipday (su hora
+  real de entrega, ver regla de pedidos).
+- **NEW10 (consecuencia de NEW02, 21-oct-2026): un mes solo se cierra con la caja al día.**
+  `closeMonth` exige día operativo = hoy y en un mes posterior al que se cierra. El capital se
+  declara en la hora real (`closedAt`): con la caja adelantada, lo ya registrado (fechado al
+  inicio del operativo) quedaba después de `closedAt` y se contaba dos veces (comprobado:
+  44.550/174.408 → 28.350/215.908); con la caja atrasada, lo siguiente quedaba antes de
+  `closedAt` y se rechazaba para siempre (ni el Cierre del día entraba). No quites estas guardas.
+- **NEW11 (21-oct-2026): sin cierre de mes, el esperado es capital + TODO lo registrado.** Antes
+  arrancaba el día 1 del mes consultado y, si el mes anterior no se había cerrado, la caja
+  "olvidaba" ese mes. El capital de Configuración no se puede cambiar tras el primer Cierre de caja,
+  así que rige desde la instalación. Con cierres de mes, el ancla sigue siendo el último cierre.
+  Prueba: `tests/claude-mes-simulado.ts` (30 días con Cierre diario cruzando el cambio de mes).
+- **NEW03 (decisión del dueño, 21-oct-2026): la ganancia incluye clientes por hora.** Ventas =
+  comisión de domicilios + `HourlyShift.companyAmount` (lo que paga el cliente menos lo del
+  domiciliario, por la fecha del servicio). Ganancia = ventas − gastos − nómina, igual en
+  `getDaySummary` (`gananciaPorHora`), `getMonthlyReport` (`sales.orders/hourly`) y el Excel (fila
+  "Clientes por hora" al final para no mover las filas fijas). Si cambias una, cambia las tres.
+- **NEW09 (21-oct-2026):** `/domiciliarios` (pantalla antigua que daba bases como movimientos de
+  Caja fuera del libro `BaseTransaction`) solo redirige a `/shipday/domiciliarios`. No la revivas.
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir
   este valor a `/shifts/current-date` — nunca calcular "hoy" directo.
 - `expectedAmount`/`bankExpected` de un cierre **siempre** los calcula el

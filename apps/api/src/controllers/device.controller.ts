@@ -38,7 +38,7 @@ export async function block(req: Request, res: Response) {
 }
 
 export async function unblock(req: Request, res: Response) {
-  res.json(await svc.unblockDevice(req.params.id, getActor(req)));
+  res.json(await svc.unblockDevice(req.params.id, getActor(req), req.body?.name));
 }
 
 export async function reject(req: Request, res: Response) {

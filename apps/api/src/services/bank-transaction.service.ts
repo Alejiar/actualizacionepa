@@ -2,7 +2,7 @@ import { applyDebtDelta, applyBankToDriver, revertDriverApplication } from "./dr
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
 import { badRequest, conflict, notFound } from "../lib/errors";
-import { assertOpenInstant, financialNow, isOpenPeriod, parseFinancialTimestamp } from "../lib/period-guard";
+import { assertOpenInstant, financialNow, isOpenPeriod, operatingClock, parseFinancialTimestamp } from "../lib/period-guard";
 import { assertMoney } from "../lib/money-validation";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import * as hourlySvc from "./hourly-client.service";
@@ -71,7 +71,10 @@ export async function create(data: {
   }
   // La fecha solicitada se valida sin normalización ni sustitución silenciosa.
   const now = await financialNow();
-  let when = data.date !== undefined ? parseFinancialTimestamp(data.date, now) : now;
+  // NEW02/AIF09: sin fecha, o con la fecha del día operativo, el dinero cuenta en el día operativo
+  // (la caja abierta), aunque el calendario vaya por delante o por detrás.
+  const op = await operatingClock();
+  let when = data.date !== undefined ? parseFinancialTimestamp(data.date, now, undefined, op) : op.at;
 
   // ── Contraparte (F01): un pairId solo se asigna a un par que REALMENTE cuadra. ────────
   // Original existente, sin pareja previa, de signo opuesto, mismo importe total (suma del
@@ -96,7 +99,7 @@ export async function create(data: {
     // La contraparte se fecha en el día del original para que el par cuadre en su día, salvo
     // que ese día ya esté cerrado: entonces cuenta hoy (no altera un día cerrado).
     const originalDay = toBogotaDateStr(original.date);
-    when = (await isOpenPeriod(originalDay, original.date)) ? original.date : now;
+    when = (await isOpenPeriod(originalDay, original.date)) ? original.date : op.at;
     await assertOpenInstant(when);
     pairId = `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await prisma.bankTransaction.updateMany({ where: { id: { in: group.map(r => r.id) } }, data: { pairId } });
@@ -273,12 +276,25 @@ export async function edit(id: string, values: { amount?: number; description?: 
   // Conservar el reparto que eligió el operador: la parte de base se mantiene (si cabe en el
   // nuevo importe) y el resto va a comisión.
   const previousBase = (await prisma.baseTransaction.aggregate({ where: { bankTransactionId: id }, _sum: { amount: true } }))._sum.amount ?? 0;
+  // Quien aplicó originalmente el ingreso a la deuda: los registros derivados se recrean a su
+  // nombre (antes quedaban sin autor ni equipo).
+  const derived = (await prisma.driverPayment.findFirst({ where: { bankTransactionId: id }, select: { createdBy: true, createdByName: true, deviceId: true, deviceName: true } }))
+    ?? (await prisma.baseTransaction.findFirst({ where: { bankTransactionId: id }, select: { createdBy: true, createdByName: true, deviceId: true, deviceName: true } }));
+  const actor = derived
+    ? { id: derived.createdBy, name: derived.createdByName, deviceId: derived.deviceId, deviceName: derived.deviceName }
+    : { id: original.createdBy, name: original.createdByName, deviceId: original.deviceId, deviceName: original.deviceName };
   await revertDriverApplication(prisma, original);
   await prisma.baseTransaction.deleteMany({where:{bankTransactionId:id}});
   await prisma.driverPayment.deleteMany({where:{bankTransactionId:id}});
-  await prisma.bankTransaction.update({where:{id},data:{...values,debtApplied:0}});
-  await applyBankToDriver(id,original.driverId,undefined,Math.min(previousBase,values.amount));
-  return prisma.bankTransaction.update({where:{id},data:{description:values.description ?? original.description}});
+  // applyBankToDriver agrega la leyenda "· Aplicado a …" con el reparto NUEVO. Antes se
+  // restauraba luego la descripción original, que conservaba la leyenda del importe anterior
+  // ("comisión $999" junto a +$998, AIF16). Se parte del texto sin la leyenda.
+  const text = values.description ?? original.description;
+  const marker = text.indexOf(" · Aplicado a ");
+  const plain = marker >= 0 ? text.slice(0, marker) : text;
+  await prisma.bankTransaction.update({where:{id},data:{...values,description:plain,debtApplied:0}});
+  await applyBankToDriver(id,original.driverId,actor,Math.min(previousBase,values.amount));
+  return prisma.bankTransaction.findUniqueOrThrow({where:{id}});
 
   });
 }

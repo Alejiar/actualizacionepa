@@ -137,10 +137,12 @@ async function main() {
   facts.reporte = { totalSales: rep.totalSales, expenses: rep.expenses, payroll: rep.payroll, netProfit: rep.netProfit, bases: { given: rep.bases.given, returned: rep.bases.returned, diff: rep.bases.diff }, commission: rep.commission.pending, transfers: rep.transfers.diff, clientDebt: rep.clientDebt };
   // Cálculo independiente (F14): base del mes = saldo anterior 0 + entregadas 20.000 − devueltas
   // 5.000 = 15.000; comisión pendiente = 9.000 − 5.400 (A) − 3.600 (B) = 0.
-  assert.equal(rep.totalSales, 9000, "comisión empresa = 30 % de 30.000");
+  // NEW03 (decisión del dueño, 21-oct-2026): ventas = comisión de domicilios (30 % de 30.000 = 9.000)
+  // + ganancia empresa por hora (2 h × 5.000 = 10.000).
+  assert.deepEqual([rep.sales?.orders, rep.sales?.hourly, rep.totalSales], [9000, 10000, 19000]);
   assert.deepEqual([rep.expenses.cash, rep.expenses.bank, rep.expenses.total], [10000, 0, 10000]);
   assert.equal(rep.payroll.total, 0);
-  assert.equal(rep.netProfit, 9000 - 10000, "utilidad = ventas − gastos − nómina (regla vigente; por hora no entra: decisión pendiente)");
+  assert.equal(rep.netProfit, 19000 - 10000, "utilidad = ventas (domicilios + por hora) − gastos − nómina");
   assert.deepEqual([rep.bases.previous, rep.bases.given, rep.bases.returned, rep.bases.diff], [0, 20000, 5000, 15000]);
   assert.equal(rep.commission.pending, 0); assert.equal(rep.debtReconciliation.total, 15000);
   assert.equal(rep.transfers.diff, 0, "la transferencia con contraparte debe cuadrar");

@@ -128,8 +128,10 @@ export default function PedidosPage() {
         </div>
       )}
 
-      <div className="glass-strong rounded-3xl overflow-hidden">
-        <table className="w-full text-sm">
+      {/* Desplazamiento horizontal: en ventana estrecha las acciones (Editar/Eliminar) quedaban
+          recortadas y sin forma de alcanzarlas (AIF17). */}
+      <div className="glass-strong rounded-3xl overflow-x-auto">
+        <table className="w-full min-w-[820px] text-sm">
           <thead>
             <tr className="border-b border-border text-muted-foreground text-xs uppercase">
               <th className="text-left px-4 py-3"># Pedido</th>

@@ -1,9 +1,9 @@
 import { assertMoney } from "../lib/money-validation";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { conflict } from "../lib/errors";
-import { bogotaMonthRange as monthRange } from "../lib/date-range";
+import { bogotaMonthRange as monthRange, todayBogota } from "../lib/date-range";
 import { basePendingByDriver } from "../lib/base-balance";
-import { financialNow } from "../lib/period-guard";
+import { financialNow, operatingDay } from "../lib/period-guard";
 
 /**
  * Reporte mensual con la lógica del Excel.
@@ -28,6 +28,7 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     driversWithBase,
     clientsWithDebt,
     normalDebtAgg, hourlyDebtAgg, hourlyClientsWithDebt,
+    hourlySalesAgg,
   ] = await Promise.all([
     prisma.shipdayOrder.aggregate({ where: orderWhere, _sum: { companyAmount: true } }),
     prisma.movement.aggregate({ where: { category: 3, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
@@ -57,6 +58,9 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     prisma.client.aggregate({ where: { pendingDebt: { gt: 0 } }, _sum: { pendingDebt: true } }),
     prisma.hourlyClient.aggregate({ where: { pendingDebt: { gt: 0 } }, _sum: { pendingDebt: true } }),
     prisma.hourlyClient.findMany({ where: { pendingDebt: { gt: 0 } }, select: { id: true, name: true, pendingDebt: true }, orderBy: { pendingDebt: "desc" }, take: 20 }),
+    // NEW03: ganancia de la empresa en los turnos por hora (lo que paga el cliente menos lo del
+    // domiciliario), por la fecha del servicio. Clientes por hora son globales (sin branchId).
+    prisma.hourlyShift.aggregate({ where: { date: { startsWith: monthPrefix } }, _sum: { companyAmount: true } }),
   ]);
 
   // ── BASES (F14, decisión del dueño 14-oct-2026) ──────────────────────────────────────────
@@ -145,7 +149,11 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     pendingDebt: m.amount,
   }));
 
-  const totalSales = ventasAgg._sum.companyAmount ?? 0;
+  // NEW03 (decisión del dueño, 21-oct-2026): las ventas y la ganancia incluyen la ganancia de la
+  // empresa en clientes por hora, además de la comisión de domicilios.
+  const salesOrders = ventasAgg._sum.companyAmount ?? 0;
+  const salesHourly = hourlySalesAgg._sum.companyAmount ?? 0;
+  const totalSales = salesOrders + salesHourly;
   const totalExpenses = gastosEf + gastosBk;
   const totalPayroll = nominaEf + nominaBk;
   // Diferencia de bases = base realmente sin devolver, conciliada con la deuda neta de cada
@@ -170,6 +178,7 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     month,
     debtReconciliation,
     totalSales,
+    sales: { orders: salesOrders, hourly: salesHourly },
     expenses: { cash: gastosEf, bank: gastosBk, total: totalExpenses },
     payroll: { cash: nominaEf, bank: nominaBk, total: totalPayroll },
     // diff = base sin devolver DEL MES (indicador/tarjeta/Excel, coherente entre sí).
@@ -207,7 +216,12 @@ export async function getMonthCloseProjection(
   // físico a dejar, TODA la base sin devolver es plata que no está en caja (igual que comisiones y
   // deudas de clientes, que también son saldos vivos totales). El indicador del panel usa diff (mes).
   const basesDiff = report.bases.diffAllTime;
-  const transferDiff = report.transfers.diff;
+  // NEW06: el reporte expresa la diferencia como ingresos − egresos pendientes. Para el capital
+  // físico se necesita "plata fuera" (como bases y comisiones): una SALIDA que espera su retorno
+  // es plata que no está y se resta; un INGRESO que espera su salida es plata ajena que sí está
+  // y se suma. Antes se usaba el signo del reporte y una salida pendiente de $9.000 aumentaba el
+  // capital físico propuesto en $9.000 (y al llegar el retorno, el banco esperado quedaba inflado).
+  const transferDiff = 0 - report.transfers.diff; // 0 - x: sin "-0" cuando no hay pendientes
   const commissionPending = report.commission.pending;
   const pendingDiffs = basesDiff + transferDiff + commissionPending;
 
@@ -272,6 +286,21 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
     where: { month, branchId: branchId ?? null },
   });
   if (existing) throw conflict(`Ya existe un cierre para ${month}`);
+  // NEW02: con el dinero fechado en el día operativo, cerrar el mes mientras uno de sus días sigue
+  // abierto dejaría la caja atrapada en un mes cerrado (ni dinero nuevo ni el Cierre de ese día).
+  const opDay = await operatingDay();
+  if (opDay.slice(0, 7) <= month) {
+    throw conflict(`No se puede cerrar ${month}: la caja abierta es la del ${opDay}. Registra primero el Cierre de los días que faltan de ese mes.`);
+  }
+  // El capital del cierre es el dinero de ESTE instante (closedAt = hora real). Si la caja va
+  // adelantada, lo ya registrado queda fechado después de closedAt y se contaría dos veces; si va
+  // atrasada, lo siguiente quedaría antes de closedAt y se rechazaría (ni el Cierre del día entraría).
+  const today = todayBogota();
+  if (opDay !== today) {
+    throw conflict(opDay > today
+      ? `No se puede cerrar ${month} todavía: la caja abierta es la del ${opDay}. Ciérralo cuando empiece ese día (después de medianoche).`
+      : `No se puede cerrar ${month} todavía: la caja abierta es la del ${opDay} y hoy es ${today}. Registra primero el Cierre de los días atrasados.`);
+  }
 
   const range = monthRange(month);
   const orderWhere = branchId
@@ -368,7 +397,7 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
       basesPaid,
       basesPending: basesPendingReconciled,
       conversions: conversionsSummary,
-      snapshot: { ...snapshot, capitalAnterior },
+      snapshot: { ...snapshot, capitalAnterior, ventas: report.sales },
       initialCash: newCash,
       initialBank: newBank,
       totalSales: report.totalSales,

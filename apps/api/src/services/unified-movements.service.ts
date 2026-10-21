@@ -23,6 +23,9 @@ export interface UnifiedMovement {
   // cobro dividido, conversión). Sin él, la fila se cuenta entera en `medium` y los
   // totales por medio de Movimientos no cuadran con la caja real.
   parts?: MovementPart[];
+  // "pending" = registro de Caja aún no confirmado (comisión manual, gasto por aprobar…):
+  // se lista para que se vea, pero NO es dinero que haya entrado/salido (AIF15).
+  status?: "pending";
 }
 
 export interface MovementPart { type: "ingreso" | "egreso"; medium: "cash" | "bank"; amount: number }
@@ -126,6 +129,7 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       entityType: "Movement",
       entityId: m.id,
       editableDescription: true,
+      ...(m.status === "pending" ? { status: "pending" as const } : {}),
     });
   }
 
@@ -302,7 +306,9 @@ function categoryLabel(cat: number): string {
     15: "Nómina efectivo",
     16: "Nómina banco",
     17: "Otro efectivo",
-    18: "Otro banco",
+    // 18 = Nómina banco: así lo define el catálogo compartido (CATEGORY_LABEL) y lo usa
+    // PayrollWizard, el cierre de mes y el Excel. Antes aquí decía "Otro banco" (AIF08).
+    18: "Nómina banco",
   };
   return labels[cat] ?? `Categoría ${cat}`;
 }

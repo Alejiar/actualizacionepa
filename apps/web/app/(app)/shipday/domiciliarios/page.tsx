@@ -67,7 +67,9 @@ export default function DomiciliariosShipdayPage() {
     const map = new Map<string, { driverId: string; name: string; count: number; total: number; company: number; orders: Order[] }>();
     for (const o of todayOrders) {
       const key = o.driver?.id ?? "sin-asignar";
-      const name = o.driver?.name ?? "Sin asignar";
+      // Con la sucursal: dos domiciliarios homónimos de sucursales distintas se veían iguales (como AIF04).
+      const branchName = branches.find(b => b.id === o.branchId)?.name;
+      const name = o.driver?.name ? (branchName ? `${o.driver.name} · ${branchName}` : o.driver.name) : "Sin asignar";
       const cur = map.get(key) ?? { driverId: key, name, count: 0, total: 0, company: 0, orders: [] };
       cur.count++;
       cur.total += o.deliveryValue;
@@ -76,7 +78,7 @@ export default function DomiciliariosShipdayPage() {
       map.set(key, cur);
     }
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [todayOrders]);
+  }, [todayOrders, branches]);
 
   // F14: comisiones y base sin devolver son cuentas separadas.
   const totalDebt = drivers.reduce((s, d) => s + d.pendingDebt, 0);

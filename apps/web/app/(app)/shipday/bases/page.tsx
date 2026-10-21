@@ -118,6 +118,15 @@ export default function BasesPage() {
   // (listDrivers.basePending = entregadas − devueltas, todo el historial). La base ya no se
   // concilia con la deuda por comisiones ni se "salda" con crédito: lo devuelto es lo devuelto.
   const basePendingByDriver = new Map(drivers.map(d => [d.id, d.basePending ?? 0]));
+  // AIF03: un domiciliario que sigue debiendo base pero no tuvo movimientos este día también
+  // se lista (antes desaparecía y su obligación no se veía en ninguna fila).
+  for (const d of drivers) {
+    if ((d.basePending ?? 0) !== 0 && !groupMap.has(d.id)) {
+      groupMap.set(d.id, { driverId: d.id, name: d.name, given: 0, givenCash: 0, givenBank: 0, paid: 0, paidCash: 0, paidBank: 0, balance: 0 });
+    }
+  }
+  // Pendiente REAL vigente (todo el historial) de los domiciliarios mostrados, no el neto del día.
+  const totalPendingNow = drivers.reduce((s, d) => s + (d.basePending ?? 0), 0);
   const settledOf = (_given: number, paid: number) => paid;
   const driverGroups = [...groupMap.values()]
     .map(g => {
@@ -173,8 +182,9 @@ export default function BasesPage() {
           )}
         </div>
         <div className="glass-strong rounded-2xl p-4">
-          <p className="text-xs text-muted-foreground">Base sin devolver (conciliada)</p>
-          <p className={`font-black text-xl tnum mt-1 ${totalGiven - totalSettled > 0 ? "text-red-500" : "text-muted-foreground"}`}>{formatCOP(totalGiven - totalSettled)}</p>
+          <p className="text-xs text-muted-foreground">Base sin devolver (total pendiente hoy)</p>
+          <p className={`font-black text-xl tnum mt-1 ${totalPendingNow > 0 ? "text-red-500" : "text-muted-foreground"}`}>{formatCOP(totalPendingNow)}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Neto {isToday ? "de hoy" : "de ese día"}: {formatCOP(totalGiven - totalSettled)}</p>
         </div>
       </div>
 
@@ -249,7 +259,8 @@ export default function BasesPage() {
                           <span className="text-muted-foreground ml-2">
                             💵 {formatCOP(b.cashAmount ?? b.amount)} · 🏦 {formatCOP(b.bankAmount ?? 0)}
                           </span>
-                          <span className="text-muted-foreground ml-2">{new Date(b.date + "T12:00:00").toLocaleDateString("es-CO", { day: "2-digit", month: "short" })}</span>
+                          {/* b.date ya es un instante ISO completo: antes se le concatenaba "T12:00:00" y salía "Invalid Date" (AIF02). */}
+                          <span className="text-muted-foreground ml-2">{new Date(b.date).toLocaleDateString("es-CO", { day: "2-digit", month: "short", timeZone: "America/Bogota" })}</span>
                           {b.notes && <span className="text-muted-foreground ml-2 truncate">· {b.notes}</span>}
                         </div>
                         <div className="flex items-center gap-1 shrink-0">

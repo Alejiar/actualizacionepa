@@ -180,6 +180,7 @@ function DayDetail({ date }: { date: string }) {
         <Detail label="↑ Ingresos" value={summary.ingresos} tone="cash" />
         <Detail label="↓ Salidas" value={-summary.egresos} tone="danger" />
         <Detail label="Comisión de domicilios" value={summary.comision} tone="cash" />
+        {(summary.gananciaPorHora ?? 0) > 0 && <Detail label="Ganancia clientes por hora" value={summary.gananciaPorHora ?? 0} tone="cash" />}
         <Detail label="Deudas de clientes generadas" value={summary.deudasGeneradas} />
         {summary.deudasCobradas > 0 && <Detail label="Deudas de clientes cobradas" value={summary.deudasCobradas} tone="cash" />}
       </div>

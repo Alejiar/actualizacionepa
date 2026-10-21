@@ -117,7 +117,7 @@ export function ShiftCloseWizard({ open, onOpenChange, date, onDone }: Props) {
         setSaving(false);
         return;
       }
-      await api.registerShift({
+      const saved = await api.registerShift({
         date,
         shift,
         receivedBy: receivedBy || undefined,
@@ -129,13 +129,19 @@ export function ShiftCloseWizard({ open, onOpenChange, date, onDone }: Props) {
         notes: notes || undefined,
       });
       const label = shift === "AM" ? "Recibo AM" : shift === "PM" ? "Recibo PM" : "Cierre final";
-      const bankOff = bankDifference !== 0;
-      if (difference !== 0 || bankOff) {
+      // El aviso usa lo que GUARDÓ el servidor (esperado recalculado al registrar), no las
+      // cifras de cuando se abrió el asistente: si entró un movimiento mientras se contaba,
+      // el cierre puede quedar descuadrado aunque la pantalla mostrara "cuadrada" (AIF10).
+      const cashDiff = saved.difference;
+      const bankDiff = saved.bankDifference ?? 0;
+      const expectedChanged = saved.totalExpected !== expectedAmount || (saved.bankExpected ?? bankExpected) !== bankExpected;
+      if (cashDiff !== 0 || bankDiff !== 0) {
         const partes = [
-          difference !== 0 ? `efectivo ${formatCOP(Math.abs(difference))}` : null,
-          bankOff ? `banco ${formatCOP(Math.abs(bankDifference))}` : null,
+          cashDiff !== 0 ? `efectivo ${cashDiff > 0 ? "sobran" : "faltan"} ${formatCOP(Math.abs(cashDiff))}` : null,
+          bankDiff !== 0 ? `banco ${bankDiff > 0 ? "sobran" : "faltan"} ${formatCOP(Math.abs(bankDiff))}` : null,
         ].filter(Boolean).join(" · ");
-        toast.warning(`⚠️ ${label} registrado con descuadre — ${partes}`);
+        toast.warning(`⚠️ ${label} registrado con descuadre — ${partes}` +
+          (expectedChanged ? " (el esperado cambió mientras se contaba: se registró otro movimiento)" : ""));
       } else {
         toast.success(`✅ ${label} registrado — caja cuadrada (efectivo y banco)`);
       }

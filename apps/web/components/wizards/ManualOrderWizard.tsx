@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
 import type { Branch, Driver, Client } from "@/lib/sd-api";
 import { todayBogota } from "@/lib/format";
+import { useDay } from "@/lib/day-context";
 
 const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`);
 
@@ -32,7 +33,9 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
   const [addToDebt, setAddToDebt] = useState(false);
   const [saving, setSaving] = useState(false);
   // Fecha REAL de entrega (decisión del dueño, 15-oct-2026): puede ser un día ya cerrado.
-  const [deliveryDate, setDeliveryDate] = useState(todayBogota());
+  // NEW02: por defecto el pedido es del día operativo (la caja abierta); ese es el máximo.
+  const { operatingDay } = useDay();
+  const [deliveryDate, setDeliveryDate] = useState(operatingDay);
   const [deliveryTime, setDeliveryTime] = useState("");
   const [dayClosed, setDayClosed] = useState(false);
   // Una clave por pedido: si la red falla y se reintenta, el servidor no lo duplica.
@@ -61,7 +64,7 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
   function reset() {
     setStep(1); setBranchId(""); setDriverId(""); setDeliveryValue(0);
     setOrderNumber(""); setCustomerName(""); setClientId(""); setAddToDebt(false);
-    setDeliveryDate(todayBogota()); setDeliveryTime(""); setIdemKey(newKey());
+    setDeliveryDate(operatingDay); setDeliveryTime(""); setIdemKey(newKey());
   }
   function close() { onOpenChange(false); setTimeout(reset, 250); }
 
@@ -167,7 +170,7 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">Fecha de entrega</span>
-              <input type="date" aria-label="Fecha de entrega" value={deliveryDate} max={todayBogota()}
+              <input type="date" aria-label="Fecha de entrega" value={deliveryDate} max={operatingDay}
                 onChange={e => setDeliveryDate(e.target.value)}
                 className="w-full glass rounded-2xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
             </label>
@@ -185,7 +188,7 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
             </p>
           )}
           <button
-            disabled={deliveryValue <= 0 || !deliveryDate || deliveryDate > todayBogota() || futureTime}
+            disabled={deliveryValue <= 0 || !deliveryDate || deliveryDate > operatingDay || futureTime}
             onClick={() => setStep(3)}
             className="w-full bg-primary text-primary-foreground font-bold py-4 rounded-2xl shadow-cash disabled:opacity-40"
           >

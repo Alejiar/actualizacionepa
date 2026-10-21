@@ -2,6 +2,11 @@
 // relativas (/api). En desarrollo, NEXT_PUBLIC_API_URL apunta a http://localhost:4000.
 
 import { getDeviceId } from "./device-id";
+import { forgetKey, rememberUnanswered, retryKeyFor } from "./retry-key";
+
+/** Mensaje ante un corte de red (antes se mostraba "TypeError: Failed to fetch"). */
+export const NETWORK_ERROR =
+  "No hubo respuesta del servidor (red o servidor caído). Revisa la conexión y vuelve a intentar: el reintento no duplica el registro.";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -69,11 +74,20 @@ export async function api<T>(path: string, opts: Options = {}): Promise<T> {
   const deviceId = getDeviceId();
   if (deviceId) headers["X-Device-Id"] = deviceId;
 
-  const res = await fetch(`${BASE}/api${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const payload = body !== undefined ? JSON.stringify(body) : undefined;
+  // NEW05: un POST reenviado tras un corte sin respuesta reutiliza su clave (ver retry-key.ts).
+  const signature = `${method} ${path} ${payload ?? ""}`;
+  const retryKey = method === "POST" ? retryKeyFor(signature) : null;
+  if (retryKey) headers["Idempotency-Key"] = retryKey;
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api${path}`, { method, headers, body: payload });
+  } catch {
+    if (retryKey) rememberUnanswered(signature, retryKey);
+    throw new ApiError(0, NETWORK_ERROR);
+  }
+  if (retryKey) forgetKey(signature);
 
   if (res.status === 401 && typeof window !== "undefined") {
     setToken(null);

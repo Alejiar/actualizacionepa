@@ -5,8 +5,7 @@ function parseClient<T extends z.ZodTypeAny>(schema:T, value:unknown):z.infer<T>
 function debtMedium(value:unknown) { if(value != null && value !== "cash" && value !== "bank") throw badRequest("Medio inválido"); }
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, notFound } from "../lib/errors";
-import { todayBogota } from "../lib/date-range";
-import { assertOpenInstant, assertCalendarDate, financialNow } from "../lib/period-guard";
+import { assertOpenInstant, assertCalendarDate, moneyNow, operatingDay } from "../lib/period-guard";
 
 // Usuario + equipo (PC) que hace la acción. Compatible con getActor(req).
 type ActorLike = { id?: string | null; name?: string | null; deviceId?: string | null; deviceName?: string | null };
@@ -54,7 +53,7 @@ export async function createClient(data: {
 
   // Si hay deuda inicial, registrarla y reflejarla en el saldo
   if (initialDebt && initialDebt > 0) {
-    const recordedAt = await financialNow();
+    const recordedAt = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
     await assertOpenInstant(recordedAt, "La deuda inicial");
     await prisma.$transaction([
       prisma.clientDebt.create({
@@ -97,13 +96,14 @@ export async function addDebt(clientId: string, description: string, amount: num
   assertMoney(amount);
   debtMedium(medium);
   if (typeof description !== "string" || !description.trim()) throw badRequest("La deuda necesita una descripción.");
-  // Fecha opcional: debe ser un día real (no "2026-02-31") y no futuro. Una fecha futura
-  // dejaba un préstamo en efectivo fuera de la caja de hoy aunque el dinero salió hoy.
+  // Fecha opcional: debe ser un día real (no "2026-02-31") y no posterior al día operativo (NEW02:
+  // la caja abierta manda, no el calendario). El día operativo usa su instante contable.
+  const opDay = await operatingDay();
   if (date != null && date !== "") {
     assertCalendarDate(date, "La deuda");
-    if (date > todayBogota()) throw badRequest("La fecha de la deuda no puede ser futura.");
+    if (date > opDay) throw badRequest(`La fecha de la deuda no puede ser posterior al día operativo (${opDay}).`);
   }
-  const debtAt = date && date !== todayBogota() ? new Date(date + "T12:00:00-05:00") : await financialNow();
+  const debtAt = date && date !== opDay ? new Date(date + "T12:00:00-05:00") : await moneyNow();
   await assertOpenInstant(debtAt, "La deuda");
   if (!(await prisma.client.findUnique({ where: { id: clientId }, select: { id: true } }))) throw notFound("Cliente no encontrado");
   const [debt] = await prisma.$transaction([
@@ -160,6 +160,7 @@ export async function registerClientPayment(
   if (requested > available) throw badRequest("El abono supera la deuda pendiente. No se admite sobrepago de clientes.");
   const applied = requested;
   await assertOpenInstant(undefined, "El abono");
+  const paidAtAll = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
   if (applied <= 0) throw badRequest("El cliente no tiene deuda pendiente");
   let left = applied, cashPool = split ? cashIn : (medium === "cash" ? applied : 0);
   for (const debt of debts) {
@@ -167,7 +168,7 @@ export async function registerClientPayment(
     const part = Math.min(left, debt.amount - (debt.paidAmount ?? 0));
     const cash = Math.min(part,cashPool), bank = part-cash;
     cashPool -= cash; left -= part;
-    const paidAt = new Date();
+    const paidAt = paidAtAll;
     for (const [paidCash,paidBank] of [[cash,0],[0,bank]]) {
       if (!paidCash && !paidBank) continue;
       await prisma.clientDebtPayment.create({data:{

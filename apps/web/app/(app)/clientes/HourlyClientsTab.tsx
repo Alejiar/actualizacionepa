@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
-import { formatCOP, todayBogota } from "@/lib/format";
+import { formatCOP } from "@/lib/format";
+import { useDay } from "@/lib/day-context";
 import { useAuth } from "@/lib/auth";
 import { useLive } from "@/lib/use-live";
 import { DeleteRequestWizard } from "@/components/wizards/DeleteRequestWizard";
@@ -120,10 +121,12 @@ export function HourlyClientsTab() {
   }
 
   async function removeClient(c: api.HourlyClient) {
-    if (!confirm(`¿Eliminar el cliente por hora "${c.name}"? Se borran sus turnos. Los movimientos de dinero ya registrados en el banco/caja se conservan.`)) return;
+    if (!confirm(`¿Eliminar el cliente por hora "${c.name}"? Si ya tiene turnos registrados NO se borra: se desactiva y se conserva todo su historial y su dinero. Si no tiene turnos, se elimina.`)) return;
     try {
-      await api.deleteHourlyClient(c.id);
-      toast.success(`Cliente "${c.name}" eliminado`);
+      const r = await api.deleteHourlyClient(c.id);
+      toast.success(r?.deactivated
+        ? `Cliente "${c.name}" desactivado: tiene turnos, así que se conservó su historial`
+        : `Cliente "${c.name}" eliminado`);
       if (expandedId === c.id) { setExpandedId(null); setDetail(null); }
       load();
     } catch (err) { toast.error(String(err)); }
@@ -738,7 +741,9 @@ function CreateClientModal({ onClose, onDone }: { onClose: () => void; onDone: (
 
 function ShiftModal({ client, drivers, onClose, onDone }: { client: api.HourlyClient; drivers: api.Driver[]; onClose: () => void; onDone: () => void }) {
   const [driverId, setDriverId] = useState("");
-  const [date, setDate] = useState(todayBogota());
+  // NEW02: el turno es del día operativo (la caja abierta) salvo que se elija uno anterior.
+  const { operatingDay } = useDay();
+  const [date, setDate] = useState(operatingDay);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [medium, setMedium] = useState<"cash" | "bank">("cash");
@@ -775,12 +780,12 @@ function ShiftModal({ client, drivers, onClose, onDone }: { client: api.HourlyCl
           <select value={driverId} onChange={e => setDriverId(e.target.value)}
             className="w-full px-3 py-2 rounded-xl bg-secondary/50 border border-border outline-none focus:ring-2 ring-primary/40">
             <option value="">Selecciona…</option>
-            {drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {drivers.map(d => <option key={d.id} value={d.id}>{d.branch?.name ? `${d.name} · ${d.branch.name}` : d.name}</option>)}
           </select>
           {drivers.length === 0 && <p className="text-[11px] text-amber-500 mt-1">No hay domiciliarios activos registrados.</p>}
         </Field>
         <Field label="Fecha del turno">
-          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          <input type="date" value={date} max={operatingDay} onChange={e => setDate(e.target.value)}
             className="w-full px-3 py-2 rounded-xl bg-secondary/50 border border-border outline-none focus:ring-2 ring-primary/40" />
         </Field>
         <div className="grid grid-cols-2 gap-3">
@@ -916,7 +921,7 @@ function EditShiftModal({ shift, client, drivers, isAdmin, onClose, onDone }: {
           <select value={driverId} onChange={e => setDriverId(e.target.value)}
             className="w-full px-3 py-2 rounded-xl bg-secondary/50 border border-border outline-none focus:ring-2 ring-primary/40">
             <option value="">Selecciona…</option>
-            {drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {drivers.map(d => <option key={d.id} value={d.id}>{d.branch?.name ? `${d.name} · ${d.branch.name}` : d.name}</option>)}
             {shift.driverId && !drivers.some(d => d.id === shift.driverId) && (
               <option value={shift.driverId}>{shift.driverName} (actual)</option>
             )}

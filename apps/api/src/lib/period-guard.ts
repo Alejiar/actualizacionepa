@@ -72,7 +72,11 @@ export function assertCalendarDate(value: unknown, label = "El registro"): asser
 export async function assertOrderPeriodOpen(at: Date, label = "El pedido", branchId?: string | null) {
   if (!Number.isFinite(at.getTime())) throw badRequest(`${label}: fecha inválida.`);
   // Una entrega no puede ser futura; se toleran 10 min de desfase entre el reloj de Shipday y el PC.
-  if (at.getTime() > Date.now() + 10 * 60_000) throw badRequest(`${label}: la fecha de entrega es futura.`);
+  // Excepción (NEW02): un pedido manual del día operativo cuando este va por delante del calendario.
+  if (at.getTime() > Date.now() + 10 * 60_000) {
+    const op = await operatingDay();
+    if (op <= todayBogota() || toBogotaDateStr(at) !== op) throw badRequest(`${label}: la fecha de entrega es futura.`);
+  }
   // Por MES del pedido (no por el instante del último cierre): un pedido no toca la caja ni el
   // capital declarado al cerrar, así que solo lo bloquea que SU mes (o uno posterior) esté
   // cerrado. Antes, cerrar septiembre el 2 de octubre impedía cargar un pedido del 1 de octubre.
@@ -86,10 +90,50 @@ export async function assertOrderPeriodOpen(at: Date, label = "El pedido", branc
 
 /** Los módulos con fecha Date reconocen el dinero en ese instante, en Bogotá. */
 export async function assertOpenInstant(at?: Date, label = "La operación", branchId?: string | null) {
-  at ??= await financialNow();
+  at ??= await moneyNow();
   if (!Number.isFinite(at.getTime())) throw badRequest(`${label}: fecha inválida.`);
-  if (at.getTime() > Date.now()) throw badRequest(`${label}: la fecha del dinero no puede ser futura.`);
+  if (at.getTime() > Date.now()) {
+    // Única excepción: un instante dentro del día operativo cuando este ya va por delante del
+    // calendario (Cierre registrado antes de medianoche). Cualquier otro futuro se rechaza.
+    const op = await operatingDay();
+    if (op <= todayBogota() || toBogotaDateStr(at) !== op) {
+      // Un día que ya tiene Cierre se informa como tal (409), no como "futuro".
+      await assertOpenPeriod(toBogotaDateStr(at), at, label, branchId);
+      throw badRequest(`${label}: la fecha del dinero no puede ser futura.`);
+    }
+  }
   await assertOpenPeriod(toBogotaDateStr(at), at, label, branchId);
+}
+
+/**
+ * Día operativo: el siguiente al último Cierre ("close"); sin Cierres, hoy. Es el día de la
+ * caja abierta y NO cambia a medianoche (misma regla que shift-close.getCurrentOperatingDate).
+ */
+export async function operatingDay(): Promise<string> {
+  const last = await prisma.shiftClose.findFirst({ where: { shift: "close" }, orderBy: { date: "desc" }, select: { date: true } });
+  if (!last) return todayBogota();
+  return toBogotaDateStr(new Date(bogotaDayRange(last.date).lte.getTime() + 1));
+}
+
+/**
+ * Instante contable del dinero registrado "ahora" (NEW02, decisión del dueño 21-oct-2026):
+ * TODO cuenta en el día operativo, nunca según el reloj. Si el día operativo es hoy, es el
+ * instante real; si la caja va atrasada (hoy es 21 y sigue abierta la del 20), el final del día
+ * operativo; si va adelantada (se cerró el 20 antes de medianoche), el inicio del día operativo.
+ * Los Cierres (ShiftClose/MonthlyClose) siguen sellándose con la hora real (financialNow): su
+ * esperado se guarda al cerrar y las correcciones posteriores se comparan con esa hora.
+ */
+export async function moneyNow(): Promise<Date> {
+  const real = await financialNow();
+  const op = await operatingDay();
+  const today = toBogotaDateStr(real);
+  if (op === today) return real;
+  return op < today ? bogotaDayRange(op).lte : bogotaDayRange(op).gte;
+}
+
+/** Día operativo y su instante contable actual, para validar fechas pedidas explícitamente. */
+export async function operatingClock(): Promise<{ day: string; at: Date }> {
+  return { day: await operatingDay(), at: await moneyNow() };
 }
 
 /** Instante tomado después del candado financiero, nunca el NOW() del inicio SQL.
@@ -106,19 +150,32 @@ export async function financialNow(): Promise<Date> {
   return new Date();
 }
 
-/** No normaliza entradas erróneas. Hoy usa el instante real; días anteriores, mediodía Bogotá. */
-export function parseFinancialTimestamp(value: unknown, now = new Date(), label = "La operación"): Date {
+/** No normaliza entradas erróneas. Con `op` (de operatingClock), una fecha sin hora igual al día
+ * operativo cuenta en su instante contable (moneyNow) y una posterior se rechaza; sin `op`, hoy
+ * usa el instante real. Días anteriores: mediodía Bogotá. */
+export function parseFinancialTimestamp(value: unknown, now = new Date(), label = "La operación", op?: { day: string; at: Date }): Date {
   if (typeof value !== "string") throw badRequest(`${label}: fecha inválida.`);
   const day = value.slice(0, 10);
   assertCalendarDate(day, label);
   if (value !== day && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/.test(value)) {
     throw badRequest(`${label}: indica una fecha o un instante con zona horaria.`);
   }
+  if (op && value === day) {
+    if (day === op.day) return op.at;
+    if (day > op.day) throw badRequest(`${label} no puede tener una fecha posterior al día operativo (${op.day}).`);
+  }
   const at = value === day && day === toBogotaDateStr(now) ? now : new Date(value === day ? day + "T12:00:00-05:00" : value);
   if (value !== day && (Number(value.slice(11, 13)) > 23 || Number(value.slice(14, 16)) > 59 || Number(value.slice(17, 19)) > 59)) {
     throw badRequest(`${label}: hora inválida.`);
   }
-  if (!Number.isFinite(at.getTime()) || at > now) throw badRequest(`${label}: fecha inválida o futura.`);
+  if (!Number.isFinite(at.getTime())) throw badRequest(`${label}: fecha inválida o futura.`);
+  if (op) {
+    // NEW02: el tope es el día operativo, no el reloj. Un instante "futuro" de un día cerrado o del
+    // operativo lo resuelve assertOpenInstant (409 día cerrado / permitido / futuro).
+    if (toBogotaDateStr(at) > op.day) throw badRequest(`${label} no puede tener una fecha posterior al día operativo (${op.day}).`);
+    return at;
+  }
+  if (at > now) throw badRequest(`${label}: fecha inválida o futura.`);
   return at;
 }
 
@@ -127,13 +184,10 @@ export async function isOpenPeriod(dateStr: string, effectiveAt: Date): Promise<
   try { await assertOpenPeriod(dateStr, effectiveAt); return true; } catch { return false; }
 }
 
-/** El mayor entre hoy (Bogotá) y el día operativo (día siguiente al último Cierre). */
+/** Fecha máxima registrable = el día operativo (NEW02): con la caja del 20 abierta no se registra
+ * dinero en el 21 aunque el calendario ya diga 21. Antes era el mayor entre hoy y el operativo. */
 async function currentMaxDate(): Promise<string> {
-  const today = todayBogota();
-  const last = await prisma.shiftClose.findFirst({ where: { shift: "close" }, orderBy: { date: "desc" }, select: { date: true } });
-  if (!last) return today;
-  const next = toBogotaDateStr(new Date(bogotaDayRange(last.date).lte.getTime() + 1));
-  return next > today ? next : today;
+  return operatingDay();
 }
 
 /**

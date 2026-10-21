@@ -59,6 +59,10 @@ const DEFAULT_SETTINGS: Settings = {
 interface Ctx {
   state: AppState;
   loading: boolean;
+  /** true solo cuando la configuración vino del servidor. Con false, `state.settings` son los
+   *  valores por defecto (p. ej. falló la carga inicial) y NO significan "instalación vacía". */
+  settingsLoaded: boolean;
+  retryLoad: () => void;
   getDay: (date: string) => DayData;
   ensureDay: (date: string) => Promise<void>;
   addMovement: (
@@ -87,6 +91,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     days: {},
   });
   const [loading, setLoading] = useState(true);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const loadedRef = useRef(false);
 
   const reloadAll = useCallback(async () => {
@@ -98,11 +103,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const daysMap: Record<string, DayData> = {};
     for (const d of days) daysMap[d.date] = d;
     setState({ settings, workers, days: daysMap });
+    setSettingsLoaded(true);
   }, []);
 
   useEffect(() => {
     if (!user) {
       setLoading(false);
+      setSettingsLoaded(false);
       loadedRef.current = false;
       return;
     }
@@ -274,10 +281,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     await reloadAll();
   }, [reloadAll]);
 
+  const retryLoad = useCallback(() => {
+    reloadAll().catch((e) => toast.error(e?.message ?? "Error al cargar datos"));
+  }, [reloadAll]);
+
   const value = useMemo<Ctx>(
     () => ({
       state,
       loading,
+      settingsLoaded,
+      retryLoad,
       getDay,
       ensureDay,
       addMovement,
@@ -291,7 +304,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setArqueo,
       resetAll,
     }),
-    [state, loading, getDay, ensureDay, addMovement, updateMovement, deleteMovement, refreshDay, addWorker, updateWorker, removeWorker, updateSettings, setArqueo, resetAll],
+    [state, loading, settingsLoaded, retryLoad, getDay, ensureDay, addMovement, updateMovement, deleteMovement, refreshDay, addWorker, updateWorker, removeWorker, updateSettings, setArqueo, resetAll],
   );
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;

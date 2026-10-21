@@ -5,6 +5,7 @@ import { MoneyInput } from "../MoneyInput";
 import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
 import { todayBogota } from "@/lib/format";
+import { useDay } from "@/lib/day-context";
 
 interface Props {
   open: boolean;
@@ -32,6 +33,12 @@ export function UnifiedBankWizard({ open, onOpenChange, onDone, prefill }: Props
   const [saving, setSaving] = useState(false);
   const [pairWith, setPairWith] = useState<string | undefined>();
   const [noCounterpart, setNoCounterpart] = useState(false);
+  // NEW02: el dinero cuenta en el día operativo (la caja abierta), sea adelantado o atrasado
+  // respecto del calendario: se propone y es el máximo permitido.
+  const { operatingDay } = useDay();
+  const today = todayBogota();
+  const latestDay = operatingDay;
+  useEffect(() => { if (open) setTxDate(d => (d === today && latestDay !== today ? latestDay : d)); }, [open, today, latestDay]);
 
   // Si viene pre-cargado (botón "registrar contraparte"), saltar al paso de medio
   useEffect(() => {
@@ -185,7 +192,7 @@ export function UnifiedBankWizard({ open, onOpenChange, onDone, prefill }: Props
           ) : (
             <div>
               <label className="text-xs text-muted-foreground font-medium">Fecha</label>
-              <input type="date" value={txDate} max={todayBogota()}
+              <input type="date" value={txDate} max={latestDay}
                 onChange={e => setTxDate(e.target.value)}
                 className="w-full mt-1 glass rounded-2xl px-5 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
@@ -221,7 +228,7 @@ export function UnifiedBankWizard({ open, onOpenChange, onDone, prefill }: Props
             <Row label="Tipo" value={type === "ingreso" ? "📥 Ingreso" : "📤 Salida"} />
             <Row label="Medio" value={medium === "cash" ? "💵 Efectivo" : medium === "mixed" ? "💵+🏦 Mixto" : "🏦 Transferencia"} />
             {description && <Row label="Observación" value={description} />}
-            <Row label="Fecha" value={pairWith ? "Misma del movimiento original" : new Date(txDate + "T12:00:00").toLocaleDateString("es-CO", { day: "2-digit", month: "long", year: "numeric" })} />
+            <Row label="Fecha" value={pairWith ? "La del movimiento original (hoy, si su día o mes ya cerró)" : new Date(txDate + "T12:00:00").toLocaleDateString("es-CO", { day: "2-digit", month: "long", year: "numeric" })} />
             <hr className="border-border" />
             {isMixed && <Row label="💵 Efectivo" value={formatCOP(cashPart)} />}
             {isMixed && <Row label="🏦 Transferencia" value={formatCOP(bankPart)} />}

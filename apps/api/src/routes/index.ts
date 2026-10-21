@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAdmin, requireAuth } from "../middlewares/auth";
 import { moneyQueueStatus } from "../lib/prisma";
 import { requireAuthorizedDevice, logActivity } from "../middlewares/device";
+import { idempotency } from "../middlewares/idempotency";
 import { asyncHandler } from "../middlewares/error";
 import { validate } from "../middlewares/validate";
 import * as auth from "../controllers/auth.controller";
@@ -74,6 +75,8 @@ apiRouter.get("/devices/me", asyncHandler(device.me));
 // cambio (POST/PATCH/DELETE) queda registrado con el PC y el usuario que lo hizo.
 apiRouter.use(requireAuthorizedDevice);
 apiRouter.use(logActivity);
+// Reintento con la misma Idempotency-Key tras una respuesta perdida: no se registra el dinero dos veces.
+apiRouter.use(idempotency);
 apiRouter.post("/auth/register", requireAdmin, validate(registerSchema), asyncHandler(auth.register));
 
 // ─── Equipos: administración (solo admin) ─────────────────────────────────────

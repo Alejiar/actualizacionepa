@@ -2,7 +2,7 @@ import { basePendingByDriver } from "../lib/base-balance";
 import ExcelJS from "exceljs";
 import { prisma } from "../lib/prisma";
 import { getMonthlyReport } from "./close.service";
-import { isBankLinkedBaseNote } from "../lib/balance-markers";
+import { isBankLinkedBaseNote, isBankLinkedPaymentNote } from "../lib/balance-markers";
 import { bogotaMonthRange as monthRange } from "../lib/date-range";
 
 function cop(n: number) {
@@ -17,7 +17,7 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
   const range = monthRange(month);
   const monthPrefix = month;
 
-  const [gEf, gBk, nEf, nBk, baseGiven, basePaid, bankIn, bankOut] = await Promise.all([
+  const [gEf, gBk, nEf, nBk, baseGiven, basePaid, bankIn, bankOut, debtPays, loans, otherMovs, legacyPays, convs] = await Promise.all([
     prisma.movement.aggregate({ where: { category: 3, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
     prisma.movement.aggregate({ where: { category: 4, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
     prisma.movement.aggregate({ where: { category: 15, status: "confirmed", date: { startsWith: monthPrefix } }, _sum: { amount: true } }),
@@ -28,6 +28,13 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
     // todos en la columna BANCO como "Transferencias", inflando el banco con efectivo.
     prisma.bankTransaction.groupBy({ by: ["medium"], where: { type: "ingreso", date: range }, _sum: { amount: true } }),
     prisma.bankTransaction.groupBy({ by: ["medium"], where: { type: "egreso", date: range }, _sum: { amount: true } }),
+    // NEW04: flujos que mueven caja/banco y que la hoja no exportaba, así que sus filas no
+    // permitían reconstruir el saldo del mes. Misma regla que getExpectedBalances.
+    prisma.clientDebtPayment.aggregate({ where: { paidAt: range }, _sum: { paidCash: true, paidBank: true } }),
+    prisma.clientDebt.groupBy({ by: ["medium"], where: { createdAt: range, medium: { not: null } }, _sum: { amount: true } }),
+    prisma.movement.groupBy({ by: ["type", "medium"], where: { status: "confirmed", date: { startsWith: monthPrefix }, category: { notIn: [3, 4, 15, 16, 18] } }, _sum: { amount: true } }),
+    prisma.driverPayment.findMany({ where: { date: range }, select: { medium: true, amount: true, notes: true } }),
+    prisma.conversion.findMany({ where: { date: range, ...(branchId ? { branchId } : {}) }, select: { type: true, amount: true } }),
   ]);
   const byMedium = (rows: { medium: string; _sum: { amount: number | null } }[], m: "cash" | "bank") =>
     rows.find(x => x.medium === m)?._sum.amount ?? 0;
@@ -68,15 +75,31 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
   }, { cash: 0, bank: 0 });
   const given = split(baseGiven);
   const paid = split(basePaid.filter(b => !isBankLinkedBaseNote(b.notes)));
+  const loanBy = (m: "cash" | "bank") => loans.find(x => x.medium === m)?._sum.amount ?? 0;
+  const otherNet = (m: "cash" | "bank") => otherMovs.filter(x => x.medium === m)
+    .reduce((s, x) => s + (x.type === "ingreso" ? 1 : -1) * (x._sum.amount ?? 0), 0);
+  // Los pagos bank-linked ya están en "Movimientos Ingreso" (su BankTransaction).
+  const legacy = legacyPays.filter(p => !isBankLinkedPaymentNote(p.notes))
+    .reduce((acc, p) => ({ ...acc, [p.medium]: acc[p.medium] + p.amount }), { cash: 0, bank: 0 });
+  const convNet = convs.reduce((acc, c) => c.type === "banco_a_efectivo"
+    ? { cash: acc.cash + c.amount, bank: acc.bank - c.amount }
+    : { cash: acc.cash - c.amount, bank: acc.bank + c.amount }, { cash: 0, bank: 0 });
 
   const leftRows: [string, number | string, number | string][] = [
-    ["1-Domicilios (comisión)", report.totalSales, ""],
+    ["1-Domicilios (comisión)", report.sales.orders, ""],
     ["3-Gastos Efectivo / 4-Banco", gEf._sum.amount ?? 0, gBk._sum.amount ?? 0],
     ["5-Bases Entregadas", given.cash, given.bank],
     ["6-Bases Devueltas", paid.cash, paid.bank],
     ["Movimientos Ingreso (efectivo / transferencia)", byMedium(bankIn, "cash"), byMedium(bankIn, "bank")],
     ["Movimientos Salida (efectivo / transferencia)", byMedium(bankOut, "cash"), byMedium(bankOut, "bank")],
     ["15-Nómina Efectivo / 16-Banco", nEf._sum.amount ?? 0, nBk._sum.amount ?? 0],
+    ["Cobros de deudas de clientes (entra)", debtPays._sum.paidCash ?? 0, debtPays._sum.paidBank ?? 0],
+    ["Préstamos / adelantos a clientes (sale)", loanBy("cash"), loanBy("bank")],
+    ["Otros movimientos de Caja (neto, p. ej. domicilios 1/2)", otherNet("cash"), otherNet("bank")],
+    ["Pagos de domiciliarios sin banco (registro antiguo, entra)", legacy.cash, legacy.bank],
+    ["Conversiones antiguas (neto)", convNet.cash, convNet.bank],
+    // NEW03: ganancia de la empresa en turnos por hora (al final para no mover las filas de arriba).
+    ["Clientes por hora (ganancia empresa)", report.sales.hourly, ""],
     ["Deudas Clientes (saldo)", report.clientDebt.balance, ""],
   ];
   let r = 3;
@@ -90,6 +113,8 @@ async function buildCierreMesSheet(wb: ExcelJS.Workbook, month: string, report: 
   // ── Columna derecha: CIERRE MES (resumen con fórmulas del sistema) ──
   const rightRows: [string, number, string?][] = [
     ["TOTAL VENTAS", report.totalSales],
+    ["  Comisión de domicilios", report.sales.orders],
+    ["  Ganancia clientes por hora", report.sales.hourly],
     ["TOTAL GASTOS", report.expenses.total],
     ["TOTAL NÓMINA", report.payroll.total],
     ["DIFERENCIA BASES", report.bases.diff, "zero"],

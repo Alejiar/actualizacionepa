@@ -88,6 +88,12 @@ export async function updateBranch(id: string, input: Partial<BranchInput> & { a
   const exists = await prisma.branch.findUnique({ where: { id } });
   if (!exists) throw notFound("Sucursal no encontrada");
   const data: Record<string, unknown> = {};
+  if (input.name !== undefined && input.name !== exists.name) {
+    // Misma regla que createBranch: antes la edición la saltaba y quedaban dos sucursales
+    // con el mismo nombre, ambiguas en todos los selectores (AIF01).
+    const duplicate = await prisma.branch.findFirst({ where: { name: input.name, NOT: { id } } });
+    if (duplicate) throw conflict("Ya existe una sucursal con ese nombre");
+  }
   if (input.name !== undefined) data.name = input.name;
   if (input.address !== undefined) data.address = input.address;
   if (input.phone !== undefined) data.phone = input.phone;

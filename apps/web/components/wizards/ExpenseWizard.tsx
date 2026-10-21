@@ -4,12 +4,12 @@ import { MoneyInput } from "../MoneyInput";
 import { useStore } from "@/lib/store";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
-import { todayBogota } from "@/lib/format";
+import { useDay } from "@/lib/day-context";
 
 interface Props { open: boolean; onOpenChange: (v: boolean) => void; date: string; }
 
 export function ExpenseWizard({ open, onOpenChange, date }: Props) {
-  const { addMovement, ensureDay } = useStore();
+  const { addMovement } = useStore();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [step, setStep] = useState(1);
@@ -17,6 +17,10 @@ export function ExpenseWizard({ open, onOpenChange, date }: Props) {
   const [amount, setAmount] = useState(0);
   const [expenseDate, setExpenseDate] = useState(date);
   const [medium, setMedium] = useState<"cash" | "bank" | null>(null);
+  const [saving, setSaving] = useState(false);
+  // NEW02: todo cuenta en el día operativo (la caja abierta), no en el calendario: es el máximo.
+  const { operatingDay } = useDay();
+  const maxDay = operatingDay;
 
   function close() {
     onOpenChange(false);
@@ -25,18 +29,28 @@ export function ExpenseWizard({ open, onOpenChange, date }: Props) {
     }, 250);
   }
 
-  function submit(m: "cash" | "bank") {
-    ensureDay(expenseDate);
-    // Admin → confirmado al instante. No-admin → pendiente de aprobación.
-    addMovement(expenseDate, {
-      category: m === "cash" ? 3 : 4,
-      type: "egreso",
-      medium: m,
-      amount,
-      description: desc,
-      status: isAdmin ? "confirmed" : "pending",
-      createdBy: user?.id,
-    } as Parameters<typeof addMovement>[1]);
+  async function submit(m: "cash" | "bank") {
+    if (saving) return;
+    setSaving(true);
+    try {
+      // Admin → confirmado al instante. No-admin → pendiente de aprobación.
+      // Se espera la respuesta: si el servidor rechaza (monto inválido, mes cerrado…) el
+      // aviso de error ya lo muestra el store y el formulario queda abierto con sus datos.
+      await addMovement(expenseDate, {
+        category: m === "cash" ? 3 : 4,
+        type: "egreso",
+        medium: m,
+        amount,
+        description: desc,
+        status: isAdmin ? "confirmed" : "pending",
+        createdBy: user?.id,
+      } as Parameters<typeof addMovement>[1]);
+    } catch {
+      setMedium(null);
+      return;
+    } finally {
+      setSaving(false);
+    }
     toast.success(isAdmin
       ? `✅ Gasto registrado: ${desc}`
       : `📋 Gasto enviado para aprobación: ${desc}`);
@@ -84,7 +98,7 @@ export function ExpenseWizard({ open, onOpenChange, date }: Props) {
             <input
               type="date"
               value={expenseDate}
-              max={todayBogota()}
+              max={maxDay}
               onChange={(e) => setExpenseDate(e.target.value)}
               className="w-full mt-1 glass rounded-2xl px-5 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
             />
@@ -102,6 +116,7 @@ export function ExpenseWizard({ open, onOpenChange, date }: Props) {
       {step === 3 && (
         <div className="grid grid-cols-2 gap-3">
           <button
+            disabled={saving}
             onClick={() => { setMedium("cash"); submit("cash"); }}
             className={`p-6 rounded-2xl border-2 transition ${medium === "cash" ? "border-primary" : "border-border"} glass hover:ring-cash`}
           >
@@ -109,6 +124,7 @@ export function ExpenseWizard({ open, onOpenChange, date }: Props) {
             <div className="font-bold mt-2">Efectivo</div>
           </button>
           <button
+            disabled={saving}
             onClick={() => { setMedium("bank"); submit("bank"); }}
             className={`p-6 rounded-2xl border-2 transition ${medium === "bank" ? "border-accent" : "border-border"} glass hover:ring-bank`}
           >

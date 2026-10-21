@@ -151,7 +151,8 @@ async function main(){
  });
  await check('F06: desactivar conserva registros, vínculos, cierre y totales históricos',async()=>{
   await bases.giveBase(driver.id,{cashAmount:30000});await drivers.registerPayment(driver.id,5000,'cash');
-  const closed=await closes.closeMonth(month,branch.id);
+  // NEW02: el mes en curso no se puede cerrar mientras su caja siga abierta; se cierra el anterior.
+  const prev=new Date(month+'-01T12:00:00-05:00');prev.setUTCDate(0);const closed=await closes.closeMonth(prev.toISOString().slice(0,7),branch.id);
   const snapshot=()=>Promise.all([p.shipdayOrder.findMany({where:{branchId:branch.id}}),p.baseTransaction.findMany({where:{branchId:branch.id},orderBy:{id:'asc'}}),p.driverPayment.findMany({where:{driverId:driver.id}}),p.bankTransaction.findMany({where:{driverId:driver.id}}),p.monthlyClose.findUnique({where:{id:closed.id}}),p.driver.findUnique({where:{id:driver.id}})]);
   const before=await snapshot(),report=await closes.getMonthlyReport(month,branch.id),bal=await balances();
   assert.equal((await api('/branches/'+branch.id,'DELETE',undefined,user)).status,403);

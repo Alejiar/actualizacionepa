@@ -20,8 +20,10 @@ export async function update(req: Request, res: Response) {
 }
 
 export async function remove(req: Request, res: Response) {
-  await svc.deleteHourlyClient(req.params.id);
-  res.json({ ok: true });
+  // Devuelve qué pasó en realidad: con turnos se DESACTIVA (se conserva la historia), sin
+  // turnos se borra. La pantalla lo necesita para no anunciar un borrado que no hubo (AIF05).
+  const result = await svc.deleteHourlyClient(req.params.id);
+  res.json({ ok: true, ...result });
 }
 
 export async function registerShift(req: Request, res: Response) {

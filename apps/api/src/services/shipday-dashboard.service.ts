@@ -109,7 +109,11 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     const prev = (closes[0]?.snapshot as { capitalAnterior?: { cash: number; bank: number } } | null)?.capitalAnterior;
     baseCash = prev?.cash ?? settings?.initialCash ?? 0;
     baseBank = prev?.bank ?? settings?.initialBank ?? 0;
-    periodStart = monthRange(today.slice(0, 7)).gte;
+    // NEW11: el capital de Configuración rige desde la instalación (no puede cambiarse tras el primer
+    // Cierre de caja), así que sin cierre de mes cuenta TODO lo registrado. Antes arrancaba en el
+    // día 1 del mes consultado: si un mes aún no se había cerrado, el día 1 la caja "olvidaba" todo
+    // el mes anterior (simulación de un mes: 1-oct esperado 127.000 con 226.000 en caja).
+    periodStart = new Date(0);
   }
   const cumRange = { gte: periodStart, lte: cutoff };
 

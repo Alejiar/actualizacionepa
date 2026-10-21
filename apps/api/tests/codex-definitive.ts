@@ -152,7 +152,10 @@ async function main() {
         for (const [type, amount] of rows) await p.bankTransaction.create({ data: { type, amount, medium: "bank", description: "Histórico roto", pairId: "broken-fixture" } });
         const r = await closes.getMonthlyReport(month); assert.equal(r.transfers.diff, expected); assert.ok(!r.transfers.ok);
         assert.ok(r.transfers.pendingItems.some(x => x.name.includes("par que no cuadra"))); await excelTransfer(expected);
-        assert.equal((await closes.getMonthCloseProjection(month, 100000, 100000)).physicalBank, 100000 - expected);
+        // NEW06 (auditoría 20-oct-2026): el proyector usa "plata fuera" = −diff. Una salida pendiente
+        // de retorno es plata que no está (resta); un ingreso pendiente de salida es plata ajena que sí
+        // está (suma). Antes se fijaba 100000 − diff, que inflaba el capital con salidas pendientes.
+        assert.equal((await closes.getMonthCloseProjection(month, 100000, 100000)).physicalBank, 100000 + expected);
       });
     }
     await check("PAIR07", "Dos contrapartes concurrentes: una pareja, un conflicto; reintento no duplica", async f => {
@@ -176,23 +179,34 @@ async function main() {
         assert.equal((await api("/sd/bases/" + driver.id + "/give", "POST", input)).status, 400);
       } assert.equal(await p.baseTransaction.count(), 0);
     });
-    const closedCreates: [string, string, () => Promise<any>][] = [
-      ["LOCK01", "Banco implícito hoy", () => income()],
-      ["LOCK02", "Entrega de base", () => bases.giveBase(driver.id, { cashAmount: 1000 })],
-      ["LOCK03", "Devolución de base", () => bases.payBase(driver.id, { cashAmount: 1000 })],
-      ["LOCK04", "Pago del domiciliario", () => drivers.registerPayment(driver.id, 1000, "bank")],
-      ["LOCK05", "Préstamo cliente del mismo día", () => clients.addDebt(client.id, "Préstamo", 1000, today, undefined, "cash")],
-      ["LOCK06", "Abono cliente", () => clients.registerClientPayment(client.id, 1000, false, "cash")],
-      ["LOCK07", "Turno por hora", () => hourly.registerShift(hc.id, shiftInput())],
-      ["LOCK08", "Cobro por hora", () => hourly.payClient(hc.id, { amount: 1000, medium: "cash" })],
-      ["LOCK09", "Conversión", () => conversions.createConversion({ branchId: branch.id, amount: 1000, type: "efectivo_a_banco" })],
+    // NEW02 (decisión del dueño, 21-oct-2026): todo cuenta en el día operativo. Tras el Cierre de
+    // hoy el operativo es mañana: lo registrado SIN fecha entra en mañana (el día cerrado no cambia);
+    // lo fechado explícitamente hoy sigue rechazado con 409.
+    const opDay = toBogotaDateStr(new Date(new Date(today + "T12:00:00-05:00").getTime() + 86400000));
+    const closedCreates: [string, string, boolean, () => Promise<any>][] = [
+      ["LOCK01", "Banco implícito", false, () => income()],
+      ["LOCK02", "Entrega de base", false, () => bases.giveBase(driver.id, { cashAmount: 1000 })],
+      ["LOCK03", "Devolución de base", false, () => bases.payBase(driver.id, { cashAmount: 1000 })],
+      ["LOCK04", "Pago del domiciliario", false, () => drivers.registerPayment(driver.id, 1000, "bank")],
+      ["LOCK05", "Préstamo cliente fechado hoy", true, () => clients.addDebt(client.id, "Préstamo", 1000, today, undefined, "cash")],
+      ["LOCK06", "Abono cliente", false, () => clients.registerClientPayment(client.id, 1000, false, "cash")],
+      ["LOCK07", "Turno por hora fechado hoy", true, () => hourly.registerShift(hc.id, shiftInput())],
+      ["LOCK08", "Cobro por hora", false, () => hourly.payClient(hc.id, { amount: 1000, medium: "cash" })],
+      ["LOCK09", "Conversión", false, () => conversions.createConversion({ branchId: branch.id, amount: 1000, type: "efectivo_a_banco" })],
     ];
-    for (const [id, name, operation] of closedCreates) await check(id, name + " no entra en día cerrado", async () => {
+    for (const [id, name, explicitToday, operation] of closedCreates) await check(id, name + (explicitToday ? " no entra en día cerrado" : " tras el Cierre entra en el día operativo, no en el cerrado"), async () => {
       await bases.giveBase(driver.id, { cashAmount: 10000 }); await clients.addDebt(client.id, "Deuda", 10000);
       await hourly.registerShift(hc.id, shiftInput()); await closeDay();
-      const before = await dashboard.getExpectedBalancesForDate(today), counts = [await p.bankTransaction.count(), await p.baseTransaction.count(), await p.clientDebtPayment.count()];
-      await assert.rejects(operation, code(409)); assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), before);
-      assert.deepEqual([await p.bankTransaction.count(), await p.baseTransaction.count(), await p.clientDebtPayment.count()], counts);
+      const before = await dashboard.getExpectedBalancesForDate(today), nextBefore = await dashboard.getExpectedBalancesForDate(opDay);
+      const counts = [await p.bankTransaction.count(), await p.baseTransaction.count(), await p.clientDebtPayment.count()];
+      if (explicitToday) {
+        await assert.rejects(operation, code(409));
+        assert.deepEqual([await p.bankTransaction.count(), await p.baseTransaction.count(), await p.clientDebtPayment.count()], counts);
+      } else {
+        await operation();
+        assert.notDeepEqual(await dashboard.getExpectedBalancesForDate(opDay), nextBefore, "el dinero debe contar en el día operativo");
+      }
+      assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), before);
     });
     await check("LOCK10", "Eliminaciones y ediciones equivalentes quedan bloqueadas", async () => {
       const b = await income(), base = await bases.giveBase(driver.id, { cashAmount: 10000 });
@@ -250,7 +264,9 @@ async function main() {
       const hold = new Promise<void>(r => release = r), entered = new Promise<void>(r => ready = r);
       const closing = moneyTransaction(async () => { await shifts.registerShift({ date: today, shift: "close", expectedAmount: 100000, bankExpected: 100000, bankCounted: 100000, denominations: { bills: [{ value: 100000, qty: 1 }], coins: [] } }); ready(); await hold; });
       await entered; const pending = api("/bank-transactions", "POST", { type: "ingreso", medium: "bank", amount: 10000, description: "En cola" });
-      release(); await closing; const r = await pending; f.status = r.status; assert.equal(r.status, 409); assert.equal(await p.bankTransaction.count(), 0);
+      // Se valida DESPUÉS del Cierre concurrente: ya no entra en hoy sino en el día operativo (NEW02).
+      release(); await closing; const r = await pending; f.status = r.status; f.day = toBogotaDateStr(new Date(r.body.date));
+      assert.equal(r.status, 201); assert.equal(f.day, opDay); assert.equal(await p.bankTransaction.count(), 1);
     });
     await check("LOCK16", "Cierre mensual bloquea origen histórico y permite abono nuevo abierto", async () => {
       const previous = new Date(month + "-01T12:00:00-05:00"); previous.setUTCDate(0); const prior = toBogotaDateStr(previous);
@@ -363,7 +379,10 @@ async function main() {
       assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 16000);
       const d = await p.driver.findUniqueOrThrow({ where: { id: driver.id } }); assert.equal(d.pendingDebt, 0); assert.equal(d.creditAmount, 0);
       const summary = await days.getDaySummary(today); assert.equal(summary.finalCash, 61000); assert.equal(summary.finalBank, 139000);
-      const report = await api("/sd/report/" + month); assert.equal(report.status, 200); assert.equal(report.body.totalSales, 3000); assert.equal(report.body.clientDebt.balance, 29000);
+      const report = await api("/sd/report/" + month); assert.equal(report.status, 200); assert.equal(report.body.clientDebt.balance, 29000);
+      // NEW03: ventas = comisión de domicilios (3.000) + ganancia empresa del turno por hora.
+      const hourlyCompany = (await p.hourlyShift.aggregate({ _sum: { companyAmount: true } }))._sum.companyAmount ?? 0;
+      assert.ok(hourlyCompany > 0); assert.deepEqual([report.body.sales.orders, report.body.sales.hourly, report.body.totalSales], [3000, hourlyCompany, 3000 + hourlyCompany]);
       await excelTransfer(0);
       assert.equal((await api("/settings", "PATCH", { initialCash: 1 }, user)).status, 403);
       const close = await closeDay(); assert.equal(close.totalExpected, 61000); assert.equal(close.bankExpected, 139000); assert.equal(close.difference, 0); assert.equal(close.bankDifference, 0);
@@ -376,17 +395,19 @@ async function main() {
       assert.deepEqual([sc.totalExpected, sc.bankExpected, sc.difference], [61000, 139000, 0]);
       assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), corrected);
       const previous = new Date(month + "-01T12:00:00-05:00"); previous.setUTCDate(0);
-      await closes.closeMonth(toBogotaDateStr(previous).slice(0, 7), undefined, 100000, 100000);
+      // NEW10: con el Cierre de hoy ya registrado la caja va adelantada (operativo = mañana) y el mes
+      // no se cierra todavía: su capital (hora real) contaría dos veces lo fechado en mañana.
+      await assert.rejects(() => closes.closeMonth(toBogotaDateStr(previous).slice(0, 7), undefined, 100000, 100000), code(409));
       assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), corrected);
       const next = (await api("/shifts/current-date")).body.date;
       assert.equal((await api("/movements", "POST", { date: next, category: 1, type: "ingreso", medium: "cash", amount: 2000 })).status, 201);
-      assert.deepEqual(await dashboard.getExpectedBalancesForDate(next), { cash: 102000, bank: 100000 });
+      assert.deepEqual(await dashboard.getExpectedBalancesForDate(next), { cash: corrected.cash + 2000, bank: corrected.bank });
       await stop(); await p.$disconnect(); await start();
       assert.equal((await api("/auth/login", "POST", { email: user.email, password: "Ficticio-Only-2026" }, null)).status, 200);
       assert.deepEqual(await dashboard.getExpectedBalancesForDate(today), corrected);
       assert.equal((await p.client.findUniqueOrThrow({ where: { id: client.id } })).pendingDebt, 13000);
       assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 16000);
-      assert.equal(await p.monthlyClose.count(), 1); assert.equal(await p.shiftClose.count(), 1); await excelTransfer(0);
+      assert.equal(await p.monthlyClose.count(), 0); assert.equal(await p.shiftClose.count(), 1); await excelTransfer(0); // NEW10: el mes no se cerró
       f.afterRestart = await dashboard.getExpectedBalancesForDate(today);
     });
     await check("LOCK20", "Escritura en otro proceso esperando cierre usa instante posterior al candado", async f => {

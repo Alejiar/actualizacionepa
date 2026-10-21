@@ -184,7 +184,7 @@ function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; mo
 
       {/* Bloque de resultados */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <RepCard label="Total Ventas (comisión)" value={fmt(report.totalSales)} accent />
+        <RepCard label="Total Ventas" value={fmt(report.totalSales)} sub={report.sales ? `🛵 Domicilios ${fmt(report.sales.orders)} · ⏱️ Por hora ${fmt(report.sales.hourly)}` : undefined} accent />
         <RepCard label="Total Gastos" value={fmt(report.expenses.total)} sub={`💵 ${fmt(report.expenses.cash)} · 🏦 ${fmt(report.expenses.bank)}`} />
         <RepCard label="Total Nómina" value={fmt(report.payroll.total)} sub={`💵 ${fmt(report.payroll.cash)} · 🏦 ${fmt(report.payroll.bank)}`} />
       </div>

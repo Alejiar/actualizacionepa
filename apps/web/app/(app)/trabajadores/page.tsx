@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useStore } from "@/lib/store";
+import { useStore, commissionsForWorker } from "@/lib/store";
+import { useDay } from "@/lib/day-context";
 import { Avatar } from "@/components/Avatar";
-import { formatCOP, todayBogota } from "@/lib/format";
+import { formatCOP } from "@/lib/format";
 import { Plus, Bike, Building2, ChevronDown, ChevronUp, DollarSign, Loader2, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
@@ -42,9 +43,8 @@ export default function WorkersPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [payrollTarget, setPayrollTarget] = useState<string | null>(null);
   const [driverPayTarget, setDriverPayTarget] = useState<{ id: string; name: string } | null>(null);
-  // Bogotá, no UTC: pasadas las 7pm hora Bogotá, el UTC ya cayó en el día
-  // siguiente y una nómina registrada esa noche quedaba fechada un día después.
-  const today = todayBogota();
+  // NEW02: la nómina se registra en el día operativo (la caja abierta), no en el calendario.
+  const { operatingDay: today } = useDay();
 
   const [drivers, setDrivers] = useState<api.Driver[]>([]);
   const [driverStatements, setDriverStatements] = useState<Record<string, DriverStatement>>({});
@@ -59,8 +59,11 @@ export default function WorkersPage() {
     return drivers.find(d => norm(d.name).includes(norm(workerName)) || norm(workerName).includes(norm(d.name)));
   }
 
-  async function loadStatement(driverId: string) {
-    if (driverStatements[driverId]) return;
+  // force: recargar aunque haya caché. Antes el refresco borraba la caché con setState y
+  // llamaba aquí en el mismo render: la clausura aún veía la caché vieja, retornaba sin pedir
+  // nada y el detalle quedaba en "Cargando" para siempre (AIF07).
+  async function loadStatement(driverId: string, force = false) {
+    if (!force && driverStatements[driverId]) return;
     setLoadingStatement(driverId);
     try {
       const stmt = await api.getDriverStatement(driverId);
@@ -122,13 +125,15 @@ export default function WorkersPage() {
             const stmt = driver ? driverStatements[driver.id] : undefined;
             const isExpanded = expandedId === w.id;
             const isLoadingStmt = driver && loadingStatement === driver.id;
+            const pendingCommission = commissionsForWorker(state, w.id).filter(r => r.status === "pending").reduce((s, r) => s + r.commission, 0);
 
             // Nómina pagada (para administrativos)
             let payrollTotal = 0;
             if (tab === "administrativos") {
               for (const d of Object.keys(state.days)) {
                 for (const m of state.days[d].movements) {
-                  if (m.workerId === w.id && (m.category === 15 || m.category === 18)) payrollTotal += m.amount;
+                  // Solo lo efectivamente pagado: una comisión pendiente no es nómina pagada.
+                  if (m.workerId === w.id && (m.category === 15 || m.category === 18) && m.status === "confirmed") payrollTotal += m.amount;
                 }
               }
             }
@@ -149,6 +154,12 @@ export default function WorkersPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {pendingCommission > 0 && (
+                      <div className="text-right mr-2">
+                        <div className="text-xs text-muted-foreground">Comisión por pagar</div>
+                        <div className="font-black text-sm tnum text-amber-600">{formatCOP(pendingCommission)}</div>
+                      </div>
+                    )}
                     {/* Quick stat */}
                     {tab === "administrativos" && (
                       <div className="text-right mr-2 hidden sm:block">
@@ -186,13 +197,15 @@ export default function WorkersPage() {
                 </div>
 
                 {/* Expanded: ADMINISTRATIVO */}
+                {isExpanded && <PendingCommissions workerId={w.id} workerName={w.name} />}
+
                 {isExpanded && tab === "administrativos" && (
                   <div className="border-t border-border px-5 pb-5 pt-4 space-y-4">
                     <div className="grid grid-cols-2 gap-3">
                       <StatBox label="Nómina pagada" value={formatCOP(payrollTotal)} />
                       <StatBox label="Pagos registrados" value={String(
                         Object.values(state.days).flatMap(d => d.movements)
-                          .filter(m => m.workerId === w.id && (m.category === 15 || m.category === 18)).length
+                          .filter(m => m.workerId === w.id && (m.category === 15 || m.category === 18) && m.status === "confirmed").length
                       )} />
                     </div>
                     {w.active ? (
@@ -259,7 +272,7 @@ export default function WorkersPage() {
                           >
                             <DollarSign className="h-4 w-4" /> Registrar pago
                           </button>
-                          <button onClick={() => { setDriverStatements(p => { const n = { ...p }; delete n[driver.id]; return n; }); loadStatement(driver.id); }} className="px-4 py-3 border border-border rounded-xl text-sm hover:bg-secondary transition">↺</button>
+                          <button onClick={() => loadStatement(driver.id, true)} className="px-4 py-3 border border-border rounded-xl text-sm hover:bg-secondary transition">↺</button>
                         </div>
                       </div>
                     ) : (
@@ -317,17 +330,13 @@ export default function WorkersPage() {
             if (!v) {
               const prev = driverPayTarget;
               setDriverPayTarget(null);
-              setDriverStatements(p => { const n = { ...p }; delete n[prev.id]; return n; });
-              loadStatement(prev.id);
+              loadStatement(prev.id, true);
             }
           }}
           driverId={driverPayTarget.id}
           driverName={driverPayTarget.name}
           statement={driverStatements[driverPayTarget.id]}
-          onDone={() => {
-            setDriverStatements(p => { const n = { ...p }; delete n[driverPayTarget.id]; return n; });
-            loadStatement(driverPayTarget.id);
-          }}
+          onDone={() => loadStatement(driverPayTarget.id, true)}
         />
       )}
     </div>
@@ -381,6 +390,72 @@ function StatBox({ label, value, highlight, warn }: { label: string; value: stri
     <div className="glass rounded-xl p-3 text-center">
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
       <div className={`text-sm font-black tnum mt-0.5 ${highlight ? "text-primary" : warn ? "text-red-500" : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * Comisiones de domicilios manuales (Configuración → porcentaje) que siguen pendientes.
+ * AIF13: la antigua página Nómina las liquidaba; al redirigirla a Trabajadores ese flujo se
+ * perdió y la comisión quedaba pendiente para siempre. Pagarla la confirma con el medio elegido
+ * y la fecha del día operativo en curso: el dinero sale el día que se paga, no el día que se
+ * ganó (ese día puede estar ya cerrado).
+ */
+function PendingCommissions({ workerId, workerName }: { workerId: string; workerName: string }) {
+  const { state, updateMovement, refreshDay } = useStore();
+  const { operatingDay } = useDay();
+  const [busy, setBusy] = useState(false);
+  const rows = commissionsForWorker(state, workerId).filter(r => r.status === "pending");
+  if (rows.length === 0) return null;
+  const total = rows.reduce((s, r) => s + r.commission, 0);
+
+  async function pay(targets: typeof rows, medium: "cash" | "bank") {
+    if (busy) return;
+    const amount = targets.reduce((s, r) => s + r.commission, 0);
+    if (!confirm(`¿Pagar ${formatCOP(amount)} de comisión a ${workerName} en ${medium === "cash" ? "efectivo" : "banco"}? Sale de la caja del día ${operatingDay}.`)) return;
+    setBusy(true);
+    let paid = 0;
+    try {
+      for (const r of targets) {
+        await updateMovement(r.date, r.id, {
+          status: "confirmed",
+          medium,
+          category: medium === "cash" ? 15 : 18,
+          date: operatingDay,
+        });
+        paid += r.commission;
+      }
+      toast.success(`✅ Comisión pagada a ${workerName}: ${formatCOP(paid)}`);
+    } catch {
+      // El store ya mostró el motivo del rechazo; lo pagado antes del error queda registrado.
+      if (paid > 0) toast.warning(`Se pagaron ${formatCOP(paid)}; el resto quedó pendiente.`);
+    } finally {
+      await refreshDay(operatingDay).catch(() => {});
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-border px-5 pt-4 pb-1 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-xs font-bold text-amber-600 uppercase tracking-wider">Comisiones de domicilios por pagar · {formatCOP(total)}</p>
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={() => pay(rows, "cash")} className="text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground font-bold disabled:opacity-50">💵 Pagar todo en efectivo</button>
+          <button disabled={busy} onClick={() => pay(rows, "bank")} className="text-xs px-3 py-1.5 rounded-lg border border-border font-bold disabled:opacity-50">🏦 Pagar todo por banco</button>
+        </div>
+      </div>
+      <div className="space-y-1">
+        {rows.map(r => (
+          <div key={r.id} className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-amber-500/5 text-sm">
+            <span className="text-xs text-muted-foreground">{r.date} · domicilio {formatCOP(r.deliveryValue)}</span>
+            <span className="font-bold tnum">{formatCOP(r.commission)}</span>
+            <span className="flex gap-1">
+              <button disabled={busy} onClick={() => pay([r], "cash")} title="Pagar en efectivo" className="text-xs px-2 py-1 rounded-lg border border-border disabled:opacity-50">💵</button>
+              <button disabled={busy} onClick={() => pay([r], "bank")} title="Pagar por banco" className="text-xs px-2 py-1 rounded-lg border border-border disabled:opacity-50">🏦</button>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

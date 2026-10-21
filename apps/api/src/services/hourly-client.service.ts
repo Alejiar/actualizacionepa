@@ -1,8 +1,7 @@
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, conflict, notFound } from "../lib/errors";
 import { assertMoney } from "../lib/money-validation";
-import { todayBogota } from "../lib/date-range";
-import { assertCalendarDate, assertOpenPeriod, assertOpenInstant, financialNow } from "../lib/period-guard";
+import { assertCalendarDate, assertOpenPeriod, assertOpenInstant, moneyNow, operatingDay } from "../lib/period-guard";
 import type { Actor } from "../lib/actor";
 
 // ─── Cálculo de tiempo y montos ───────────────────────────────────────────────
@@ -207,8 +206,10 @@ function shiftRates(shift: { minutes: number; driverAmount: number; totalAmount:
 
 async function assertServiceDate(date: unknown) {
   assertCalendarDate(date, "El turno");
-  if (date > todayBogota()) throw badRequest("La fecha del servicio no puede ser futura.");
-  await assertOpenPeriod(date, date === todayBogota() ? new Date() : new Date(date + "T12:00:00-05:00"), "El turno");
+  // NEW02: el límite es el día operativo (la caja abierta), no el calendario.
+  const opDay = await operatingDay();
+  if (date > opDay) throw badRequest(`La fecha del servicio no puede ser posterior al día operativo (${opDay}).`);
+  await assertOpenPeriod(date, date === opDay ? await moneyNow() : new Date(date + "T12:00:00-05:00"), "El turno");
 }
 
 async function assertShiftOpen(shift: { id: string; date: string; driverPaid: boolean; driverPaidAt: Date | null; createdAt: Date }) {
@@ -231,9 +232,9 @@ export async function registerShift(
   input: { driverId?: string; startTime: string; endTime: string; date?: string; medium: "cash" | "bank"; confirmOvernight?: unknown; actor?: Actor },
 ) {
   return moneyTransaction(async () => {
-  const serviceDate = input.date === undefined ? todayBogota() : input.date;
+  const serviceDate = input.date === undefined ? await operatingDay() : input.date;
   await assertServiceDate(serviceDate);
-  const paidAt = await financialNow();
+  const paidAt = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
   await assertOpenInstant(paidAt, "El desembolso del turno");
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
@@ -329,6 +330,7 @@ export async function registerShift(
 export async function payDriver(shiftId: string, input: { medium: "cash" | "bank"; actor?: Actor }) {
   return moneyTransaction(async () => {
   await assertOpenInstant(undefined, "El pago del turno");
+  const payAt = await moneyNow(); // NEW02: cuenta en el día operativo
   const shift = await prisma.hourlyShift.findUnique({ where: { id: shiftId }, include: { hourlyClient: true } });
   if (!shift) throw notFound("Turno no encontrado");
   if (shift.driverPaid) throw badRequest("A este domiciliario ya se le pagó este turno");
@@ -347,7 +349,7 @@ export async function payDriver(shiftId: string, input: { medium: "cash" | "bank
         noCounterpart: true,
         createdBy: input.actor?.id ?? null,
         createdByName: input.actor?.name ?? null,
-        date: new Date(),
+        date: payAt,
       },
     });
     await tx.hourlyShift.update({
@@ -355,7 +357,7 @@ export async function payDriver(shiftId: string, input: { medium: "cash" | "bank
       data: {
         driverPaid: true,
         driverPaidMedium: medium,
-        driverPaidAt: new Date(),
+        driverPaidAt: payAt,
         driverPaidBankTxId: bankTx.id,
         driverPaidBy: input.actor?.id ?? null,
         driverPaidByName: input.actor?.name ?? null,
@@ -383,6 +385,7 @@ export async function payClient(
 ) {
   return moneyTransaction(async () => {
   await assertOpenInstant(undefined, "El cobro por hora");
+  const chargeAt = await moneyNow(); // NEW02: cuenta en el día operativo
   const client = await prisma.hourlyClient.findUnique({ where: { id: clientId } });
   if (!client) throw notFound("Cliente no encontrado");
   const totalPending = client.pendingDebt;
@@ -427,7 +430,7 @@ export async function payClient(
           createdByName: input.actor?.name ?? null,
           deviceId: input.actor?.deviceId ?? null,
           deviceName: input.actor?.deviceName ?? null,
-          date: new Date(),
+          date: chargeAt,
         },
       });
       await tx.hourlyShift.update({
@@ -435,7 +438,7 @@ export async function payClient(
         data: {
           paidAmount: newPaid,
           paid: newPaid >= s.totalAmount,
-          paidAt: new Date(),
+          paidAt: chargeAt,
           // Medio del cobro por turno (registro; el saldo lo lleva el BankTransaction de arriba).
           ...(medium === "cash" ? { paidCash: { increment: apply } } : { paidBank: { increment: apply } }),
           paidBy: input.actor?.id ?? null,

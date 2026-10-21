@@ -119,7 +119,10 @@ export default function EquiposPage() {
     await run(d.id, () => api.rejectDevice(d.id), "Equipo rechazado");
   }
   async function unblock(d: Device) {
-    await run(d.id, () => api.unblockDevice(d.id), "Equipo reautorizado");
+    // Un equipo rechazado estando pendiente no tiene nombre: se pide antes de reautorizar (AIF11).
+    const name = (d.name ?? names[d.id] ?? "").trim();
+    if (!name) { toast.error("Ponle un nombre al equipo para reautorizarlo"); return; }
+    await run(d.id, () => api.unblockDevice(d.id, d.name ? undefined : name), `Equipo reautorizado como "${name}"`);
   }
   async function closeSystem(d: Device) {
     if (!confirm(`¿Cerrar el sistema en "${d.name ?? "este equipo"}"? Volverá al login (sirve para identificar cuál es).`)) return;
@@ -236,6 +239,14 @@ export default function EquiposPage() {
                 <div key={d.id} className="glass-strong rounded-2xl p-4 border border-red-500/20 bg-red-500/5 space-y-3">
                   <DeviceMeta d={d} />
                   <div className="flex flex-wrap items-center gap-2">
+                    {!d.name && (
+                      <input
+                        value={nameFor(d.id, "")}
+                        onChange={e => setName(d.id, e.target.value)}
+                        placeholder="Nombre del equipo (obligatorio, p. ej. PC 3)"
+                        className="flex-1 min-w-[160px] px-3 py-2 rounded-xl border border-border bg-background text-sm"
+                      />
+                    )}
                     <button disabled={busy === d.id} onClick={() => unblock(d)}
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-bold hover:opacity-90 transition disabled:opacity-50">
                       <RotateCcw className="h-4 w-4" /> Reautorizar

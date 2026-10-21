@@ -2,7 +2,7 @@ import { prisma, moneyTransaction } from "../lib/prisma";
 import { notFound, badRequest, conflict } from "../lib/errors";
 import { bogotaOpenRange } from "../lib/date-range";
 import { getBaseLedger } from "../lib/base-balance";
-import { assertOpenInstant, financialNow } from "../lib/period-guard";
+import { assertOpenInstant, moneyNow } from "../lib/period-guard";
 import { assertMoney } from "../lib/money-validation";
 
 /**
@@ -115,7 +115,7 @@ export async function giveBase(driverId: string, input: { cashAmount?: number; b
   if ((input.cashAmount !== undefined || input.bankAmount !== undefined) && input.amount !== undefined && input.amount !== cashAmount + bankAmount) throw badRequest("El total no coincide con efectivo más banco.");
   if (!Number.isSafeInteger(amount) || amount <= 0 || cashAmount < 0 || bankAmount < 0) throw badRequest("El monto debe ser mayor a 0");
 
-  const recordedAt = await financialNow();
+  const recordedAt = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
   // F14: la base entregada se lleva en su propio libro; no suma a la deuda por comisiones.
   return prisma.baseTransaction.create({
     data: { driverId, branchId: driver.branchId, amount, cashAmount, bankAmount, type: "entrega", date: recordedAt, notes: input.notes, createdBy: input.createdBy ?? null, createdByName: input.createdByName ?? null, deviceId: input.deviceId ?? null, deviceName: input.deviceName ?? null },
@@ -151,7 +151,7 @@ export async function payBase(driverId: string, input: { cashAmount?: number; ba
     throw badRequest(`El pago de base ($${amount.toLocaleString("es-CO")}) supera la base pendiente ($${basePending.toLocaleString("es-CO")}). Ajusta el monto: no se puede devolver más base de la que se debe.`);
   }
 
-  const recordedAt = await financialNow();
+  const recordedAt = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
   // F14: devolver base reduce solo el libro de base (no la deuda por comisiones).
   return prisma.baseTransaction.create({
     data: { driverId, branchId: driver.branchId, amount, cashAmount, bankAmount, type: "pago", date: recordedAt, notes: input.notes, createdBy: input.createdBy ?? null, createdByName: input.createdByName ?? null, deviceId: input.deviceId ?? null, deviceName: input.deviceName ?? null },

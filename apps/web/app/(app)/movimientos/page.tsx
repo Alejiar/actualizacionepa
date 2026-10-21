@@ -66,7 +66,9 @@ export default function MovimientosPage() {
     return true;
   });
 
-  const matchedParts = filtered.flatMap(m => partsOf(m).filter(partMatches));
+  // Los pendientes (comisión manual, gasto por aprobar) se listan pero no son dinero
+  // movido todavía: no entran en los totales (AIF15).
+  const matchedParts = filtered.filter(m => m.status !== "pending").flatMap(m => partsOf(m).filter(partMatches));
   const totalIngresos = matchedParts.filter(p => p.type === "ingreso").reduce((s, p) => s + p.amount, 0);
   const totalEgresos  = matchedParts.filter(p => p.type === "egreso").reduce((s, p) => s + p.amount, 0);
   const balance = totalIngresos - totalEgresos;
@@ -163,6 +165,11 @@ export default function MovimientosPage() {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0 ${SOURCE_COLORS[m.source] ?? "bg-secondary text-muted-foreground"}`}>
                     {m.source}
                   </span>
+                  {m.status === "pending" && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0 bg-amber-500/15 text-amber-600" title="Aún no confirmado: no suma a los totales ni a la caja">
+                      Pendiente — no mueve caja
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {m.date} {m.time}
@@ -179,7 +186,7 @@ export default function MovimientosPage() {
               </div>
 
               {/* Monto */}
-              <span className={`font-black text-base tnum shrink-0 ${m.type === "ingreso" ? "text-green-600" : "text-red-500"}`}>
+              <span className={`font-black text-base tnum shrink-0 ${m.status === "pending" ? "text-amber-600" : m.type === "ingreso" ? "text-green-600" : "text-red-500"}`}>
                 {m.type === "ingreso" ? "+" : "−"}{formatCOP(m.amount)}
               </span>
 

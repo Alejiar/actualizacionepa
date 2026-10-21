@@ -5,7 +5,7 @@ import { prisma, moneyTransaction } from "../lib/prisma";
 import { badRequest, conflict, notFound } from "../lib/errors";
 import { bogotaDayRange, toBogotaDateStr } from "../lib/date-range";
 import { assertMoney } from "../lib/money-validation";
-import { assertOrderPeriodOpen, financialNow, parseFinancialTimestamp } from "../lib/period-guard";
+import { assertOrderPeriodOpen, operatingClock, parseFinancialTimestamp } from "../lib/period-guard";
 
 /**
  * Pedido manual (decisión del dueño, 15-oct-2026): se registra con su fecha REAL de entrega,
@@ -36,9 +36,12 @@ export async function manualCreate(req: Request, res: Response) {
       if (existing) return { result: existing, replay: true };
     }
 
+    // NEW02: sin fecha, o con la del día operativo, el pedido cuenta en el día operativo (la caja
+    // abierta); una fecha anterior conserva su día real (decisión del 15-oct).
+    const op = await operatingClock();
     const at = deliveredAt === undefined || deliveredAt === null || deliveredAt === ""
-      ? await financialNow()
-      : parseFinancialTimestamp(deliveredAt, new Date(), "La fecha de entrega");
+      ? op.at
+      : parseFinancialTimestamp(deliveredAt, new Date(), "La fecha de entrega", op);
     const day = toBogotaDateStr(at);
 
     const branch = await prisma.branch.findUnique({ where: { id: branchId } });
@@ -66,7 +69,7 @@ export async function manualCreate(req: Request, res: Response) {
     const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
     const commissionPercent = settings?.shipdayCommission ?? 30;
     const companyAmount = Math.round(deliveryValue * (commissionPercent / 100));
-    const createdAt = await financialNow();
+    const createdAt = op.at; // NEW02: registro (y deuda fiada vinculada) en el día operativo
 
     const created = await prisma.$transaction(async (tx) => {
       const order = await tx.shipdayOrder.create({

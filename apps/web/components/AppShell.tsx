@@ -12,7 +12,7 @@ import { useAuth } from "@/lib/auth";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { date, setDate, operatingDay } = useDay();
-  const { state, loading, getDay } = useStore();
+  const { state, loading, settingsLoaded, retryLoad, getDay } = useStore();
   const { user } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -20,6 +20,21 @@ export function AppShell({ children }: { children: ReactNode }) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="h-10 w-10 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
+  // AIF14: si la carga inicial falló, los ajustes son los de fábrica (setupComplete=false) y antes
+  // se abría el asistente de instalación sobre un sistema ya configurado. Se espera a leerlos.
+  if (!settingsLoaded) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6 text-center">
+        <div className="max-w-md space-y-3">
+          <div className="mx-auto h-10 w-10 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          <h1 className="text-lg font-black">No se pudo cargar la configuración</h1>
+          <p className="text-sm text-muted-foreground">Se reintenta automáticamente. No se ha modificado ningún dato.</p>
+          <button onClick={retryLoad} className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-bold">Reintentar ahora</button>
+        </div>
       </div>
     );
   }

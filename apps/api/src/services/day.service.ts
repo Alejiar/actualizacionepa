@@ -173,9 +173,11 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
   ]);
   // Fuentes que ya mueven la caja esperada (getExpectedBalances) y faltaban en el desglose:
   // conversiones efectivo↔banco y préstamos de clientes con desembolso (deuda con medio).
-  const [convs, loans] = await Promise.all([
+  const [convs, loans, hourlyShifts] = await Promise.all([
     prisma.conversion.findMany({ where: { date: range }, select: { type: true, amount: true } }),
     prisma.clientDebt.findMany({ where: { createdAt: range, medium: { not: null } }, select: { amount: true, medium: true } }),
+    // NEW03: turnos por hora del día (por fecha del servicio) para la ganancia de la empresa.
+    prisma.hourlyShift.findMany({ where: { date }, select: { companyAmount: true } }),
   ]);
 
   let cashIn = 0, cashOut = 0, bankIn = 0, bankOut = 0;
@@ -217,6 +219,7 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
   for (const cp of clientDebtsPaid) { cashIn += cp.paidCash; bankIn += cp.paidBank; }
 
   const comision = orders.reduce((s, o) => s + o.companyAmount, 0);
+  const gananciaPorHora = hourlyShifts.reduce((s, h) => s + h.companyAmount, 0);
   const deudasGeneradas = clientDebtsGenAgg._sum.amount ?? 0;
   const deudasCobradas = clientDebtsPaid.reduce((s, cp) => s + (cp.paidAmount ?? cp.paidCash + cp.paidBank), 0);
 
@@ -239,6 +242,7 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
     orders.length > 0 ||
     convs.length > 0 ||
     loans.length > 0 ||
+    hourlyShifts.length > 0 ||
     (clientDebtsGenAgg._sum.amount ?? 0) > 0 ||
     !!closeShift;
 
@@ -251,12 +255,14 @@ export async function getDaySummary(date: string, openingOverride?: { cash: numb
     ingresos: cashIn + bankIn,
     egresos: cashOut + bankOut,
     comision,
+    gananciaPorHora,
     deudasGeneradas,
     deudasCobradas,
     finalCash,
     finalBank,
     finalTotal: finalCash + finalBank,
-    netProfit: comision - gastos - nomina,
+    // NEW03 (decisión del dueño, 21-oct-2026): incluye la ganancia de clientes por hora.
+    netProfit: comision + gananciaPorHora - gastos - nomina,
     hasClose: !!closeShift,
     cajaCuadrada,
     // D7: el Cierre conserva su conteo ORIGINAL; las correcciones aprobadas después se listan
