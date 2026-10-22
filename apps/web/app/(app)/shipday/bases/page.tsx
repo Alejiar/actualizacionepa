@@ -261,7 +261,7 @@ export default function BasesPage() {
                           </span>
                           {/* b.date ya es un instante ISO completo: antes se le concatenaba "T12:00:00" y salía "Invalid Date" (AIF02). */}
                           <span className="text-muted-foreground ml-2">{new Date(b.date).toLocaleDateString("es-CO", { day: "2-digit", month: "short", timeZone: "America/Bogota" })}</span>
-                          {b.notes && <span className="text-muted-foreground ml-2 truncate">· {b.notes}</span>}
+                          {b.notes && <span className="text-muted-foreground block truncate">{b.notes}</span>}
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           <button

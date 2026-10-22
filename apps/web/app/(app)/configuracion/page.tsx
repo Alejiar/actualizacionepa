@@ -319,11 +319,11 @@ function UserManagement() {
         <div className="space-y-2">
           {users.map(u => (
             <div key={u.id} className={`flex items-center justify-between p-3 rounded-xl bg-secondary/30 ${!u.active ? "opacity-50" : ""}`}>
-              <div className="flex items-center gap-3">
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center font-black text-sm ${u.role === "admin" ? "bg-amber-500/20 text-amber-600" : "bg-primary/15 text-primary"}`}>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center font-black text-sm ${u.role === "admin" ? "bg-amber-500/20 text-amber-600" : "bg-primary/15 text-primary"}`}>
                   {u.name.charAt(0).toUpperCase()}
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="font-bold text-sm flex items-center gap-2">
                     {u.name}
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${u.role === "admin" ? "bg-amber-500/20 text-amber-600" : "bg-primary/15 text-primary"}`}>
