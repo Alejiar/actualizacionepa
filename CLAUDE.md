@@ -242,6 +242,9 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   operativo NO es futuro: si su día ya tiene Cierre (cerrado por adelantado) sigue la regla de días
   cerrados (409 directo, permitido como corrección D7 aprobada). Solo lo posterior al día operativo
   es "futuro" (`assertOpenInstant`). Regresión: `D7-ADELANTADO` en `tests/claude-f14-d7.ts`.
+- **NEW15 (22-oct-2026):** `closeMonth` se rechaza si hay dinero con hora posterior a `closedAt` (registrado con la caja
+  adelantada con hora explícita del día operativo): el capital declarado ya lo incluía y el esperado lo
+  volvía a sumar. Regresión `MES-FUTURO` en `tests/claude-f14-d7.ts`.
 - **NEW12 (21-oct-2026):** toda ventana emergente (overlay `fixed inset-0` propio o `DialogContent`)
   lleva `max-h-[92vh] overflow-y-auto` en el panel: en pantallas bajas (588 px) el detalle del día
   cortaba sus botones y no se podía desplazar.

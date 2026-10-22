@@ -277,6 +277,21 @@ export async function getMonthCloseProjection(
   };
 }
 
+/** Primer instante de dinero posterior a `at`, en las mismas fuentes que suma el esperado de caja. */
+async function firstMoneyAfter(at: Date): Promise<Date | null> {
+  const after = { gt: at };
+  const rows = await Promise.all([
+    prisma.bankTransaction.findFirst({ where: { date: after }, orderBy: { date: "asc" }, select: { date: true } }),
+    prisma.conversion.findFirst({ where: { date: after }, orderBy: { date: "asc" }, select: { date: true } }),
+    prisma.driverPayment.findFirst({ where: { date: after }, orderBy: { date: "asc" }, select: { date: true } }),
+    prisma.baseTransaction.findFirst({ where: { date: after }, orderBy: { date: "asc" }, select: { date: true } }),
+    prisma.clientDebtPayment.findFirst({ where: { paidAt: after }, orderBy: { paidAt: "asc" }, select: { paidAt: true } }),
+    prisma.clientDebt.findFirst({ where: { createdAt: after, medium: { not: null } }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
+  ]);
+  const times = rows.flatMap(r => (r ? [Object.values(r)[0] as Date] : []));
+  return times.length ? new Date(Math.min(...times.map(t => t.getTime()))) : null;
+}
+
 export async function closeMonth(month: string, branchId?: string, initialCash?: number, initialBank?: number, actor?: { id?: string | null; name?: string | null }) {
   if (initialCash !== undefined) assertMoney(initialCash, true);
   if (initialBank !== undefined) assertMoney(initialBank, true);
@@ -385,6 +400,15 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
   const basesPendingReconciled = await getMonthBasePendingReconciled(month, branchId ?? null);
 
   const closedAt = await financialNow();
+  // NEW15 (auditoría visual 2, 22-oct-2026): con la caja adelantada se puede registrar dinero con
+  // hora explícita dentro del día operativo (NEW02). Si esa hora aún no llega, el capital declarado
+  // ya lo incluye y el esperado lo volvía a sumar después de closedAt (comprobado: −10 contado dos
+  // veces, 91.100 → 91.090). Se cierra cuando pase esa hora.
+  const later = await firstMoneyAfter(closedAt);
+  if (later) {
+    const hora = later.toLocaleString("es-CO", { timeZone: "America/Bogota", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+    throw conflict(`No se puede cerrar ${month} todavía: hay dinero registrado con hora posterior a este momento (${hora}). Ciérralo después de esa hora.`);
+  }
   return prisma.monthlyClose.create({
     data: {
       branchId: branchId ?? null,
