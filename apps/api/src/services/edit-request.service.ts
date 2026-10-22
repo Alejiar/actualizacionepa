@@ -8,7 +8,7 @@ import { toBogotaDateStr } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import { applyDebtDelta } from "./driver.service";
 import { getBaseLedger } from "../lib/base-balance";
-import { assertOpenPeriod, assertOpenInstant, movementEffectiveAt, runAsApprovedCorrection, assertCalendarDate } from "../lib/period-guard";
+import { assertOpenPeriod, assertOpenInstant, assertOrderPeriodOpen, movementEffectiveAt, runAsApprovedCorrection, assertCalendarDate } from "../lib/period-guard";
 import { getRawExpectedEndOfDay } from "./shipday-dashboard.service";
 import { addMovement } from "./movement.service";
 import { assertMoney } from "../lib/money-validation";
@@ -508,7 +508,10 @@ async function assertEntityPeriod(entity: string, id: string) {
     await assertOpenInstant(row.date, "La conversión", row.branchId);
   } else if (entity === "ShipdayOrder") {
     const row = await prisma.shipdayOrder.findUniqueOrThrow({ where: { id } });
-    await assertOpenInstant(row.deliveredAt ?? row.createdAt, "El pedido", row.branchId);
+    // INC-R2-05: un pedido no mueve caja ni banco (decisión del 14-oct): corregirlo o eliminarlo solo lo bloquea
+    // un MES cerrado, igual que cargarlo. Antes se exigía el instante del último cierre de mes y un pedido del mes
+    // abierto anterior a ese instante (p. ej. del día 1, si el mes anterior se cerró el día 2) quedaba sin corrección.
+    await assertOrderPeriodOpen(row.deliveredAt ?? row.createdAt, "El pedido", row.branchId);
   }
 }
 

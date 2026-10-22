@@ -39,6 +39,12 @@ export async function assertOpenPeriod(dateStr: string, effectiveAt: Date, label
   if (dateStr > maxDate) throw badRequest(`${label} no puede tener una fecha posterior al día operativo (${maxDate}).`);
   const lastClose = await prisma.monthlyClose.findFirst({ where: { branchId: null }, orderBy: { closedAt: "desc" }, select: { closedAt: true, month: true } });
   if (lastClose && effectiveAt.getTime() <= lastClose.closedAt.getTime()) {
+    // OBS-R2-01: un día del mes ABIERTO anterior al instante del cierre también queda fijo (es parte del
+    // capital declarado al cerrar). El mensaje anterior decía "mes cerrado" y confundía.
+    if (dateStr.slice(0, 7) > lastClose.month) {
+      const when = lastClose.closedAt.toLocaleString("es-CO", { timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short" });
+      throw conflict(`${label}: el día ${dateStr} es anterior al cierre de ${lastClose.month}, registrado el ${when}. Lo anterior a un cierre de mes ya no se modifica: registra el ajuste en el día operativo.`);
+    }
     throw conflict(`${label} cae antes del cierre de ${lastClose.month}. Un mes cerrado no se modifica.`);
   }
   if (branchId) {

@@ -249,7 +249,7 @@ async function main() {
   });
   at(18, "B-DIFERENCIAS", "Cierre con sobrante de efectivo y banco que no cuadra", "Cierre registrado en rojo con difference=+700 y bankDifference=−300; el esperado del día siguiente NO absorbe la diferencia (sigue al libro)", async () => { (globalThis as any).__diffClose = true; });
   at(20, "B-REINICIO", "REINICIO REAL: se mata el proceso del servidor (dist) en plena ráfaga de 40 operaciones y se vuelve a levantar", "Ninguna operación queda a medias: cada base existe completa o no existe; tras reiniciar, esperado y saldos = libro con las que quedaron; el servidor vuelve a responder", async (d, f) => {
-    const port = 4190 + Math.floor(Math.random() * 7);
+    const port = 4300 + Math.floor(Math.random() * 7); // OBS-07: fetch (WHATWG) rechaza el puerto 4190 ("bad port")
     const spawn = () => cp.spawn(process.execPath, ["--require", path.join(__dirname, "block-external.cjs"), path.resolve(__dirname, "../dist/index.js")], { cwd: path.resolve(__dirname, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", WEB_DIR: "" }, stdio: ["ignore", fs.openSync(path.join(__dirname, "final-b-child.log"), "a"), fs.openSync(path.join(__dirname, "final-b-child.log"), "a")], windowsHide: true });
     const waitUp = async () => { const t0 = Date.now(); for (let t = 0; t < 360; t++) { try { const r = await realFetch(`http://127.0.0.1:${port}/api/health`); if (r.ok) { (f.arranqueMs ??= []).push(Date.now() - t0); return; } } catch { } await new Promise(r => setTimeout(r, 250)); } throw Error("el servidor no levantó en 90 s"); };
     let child = spawn();

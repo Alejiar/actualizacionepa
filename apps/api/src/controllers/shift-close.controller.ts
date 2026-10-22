@@ -57,7 +57,8 @@ export async function register(req: Request, res: Response) {
   // El banco contado es OBLIGATORIO en todo cierre: puede ser 0, pero no vacío. Se valida
   // antes de entrar a la caja (no requiere leer saldos).
   const rawBank = req.body.bankCounted;
-  if (rawBank == null || rawBank === "" || Number.isNaN(Number(rawBank))) {
+  // INC-R2-02: solo número o texto numérico (Number(true) daba 1 y Number([x]) daba x).
+  if (rawBank == null || rawBank === "" || (typeof rawBank !== "number" && typeof rawBank !== "string") || Number.isNaN(Number(rawBank))) {
     throw badRequest("Debe ingresar el valor del banco para continuar con el cierre.");
   }
   const bankCounted = Number(rawBank);

@@ -258,6 +258,14 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   1.000…50, cantidades enteras ≥ 0, banco contado entero ≥ 0. Antes aceptaba cantidades negativas o
   "billetes" inventados y se fabricaba un Cierre verde sin la plata. Si cambias las denominaciones,
   cambia ambas listas. Los tests cuentan con `tests/real-count.ts`.
+- **Ronda 2 de la auditoría final (22-oct-2026):** nunca conviertas dinero con `Number(x)` sin
+  comprobar el tipo (`Number(true)`=1, `Number([5000])`=5000: INC-R2-02); un `Movement` pendiente
+  también exige fecha real y ≤ día operativo, al crear y al editar (INC-R2-03); el webhook acepta
+  epoch en segundos o ms (INC-R2-04); corregir/eliminar un `ShipdayOrder` solo lo bloquea un MES
+  cerrado (`assertOrderPeriodOpen`), como cargarlo (INC-R2-05); `getExpectedBalances` no debe leer
+  `MonthlyClose.snapshot` de todos los cierres (≈200 KB c/u; INC-R2-06). Las pruebas de reinicio no
+  usan el puerto 4190: `fetch` (WHATWG) lo rechaza como "bad port". Continuaciones con reloj simulado:
+  `tests/run-r2.cjs` + `tests/fake-clock.cjs` (los servidores hijos siempre con `block-external.cjs`).
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir
   este valor a `/shifts/current-date` — nunca calcular "hoy" directo.
 - `expectedAmount`/`bankExpected` de un cierre **siempre** los calcula el

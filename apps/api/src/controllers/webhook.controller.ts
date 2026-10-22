@@ -59,9 +59,12 @@ function str(v: unknown): string | null {
  */
 function parseDeliveredAt(v: unknown): Date {
   if (v == null || v === "") return new Date();
-  if (typeof v === "number") return new Date(v);
+  // INC-R2-04: el comentario ya admitía epoch en SEGUNDOS (10 dígitos) pero se tomaba como ms (enero de 1970):
+  // el pedido se rechazaba como "mes cerrado" o, con día de arranque, se ignoraba en silencio.
+  const epoch = (n: number) => new Date(n < 1e11 ? n * 1000 : n);
+  if (typeof v === "number") return epoch(v);
   const s = String(v).trim();
-  if (/^\d{10,}$/.test(s)) return new Date(Number(s)); // epoch en ms (o s de 10 díg.)
+  if (/^\d{10,}$/.test(s)) return epoch(Number(s)); // epoch en ms (o s de 10 díg.)
   const d = new Date(s);
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) assertCalendarDate(s.slice(0, 10), "La entrega");
   if (isNaN(d.getTime())) throw badRequest("Fecha de entrega inválida.");

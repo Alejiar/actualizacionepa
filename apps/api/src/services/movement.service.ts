@@ -3,7 +3,7 @@ import type { CreateMovementRequest, Movement, UpdateMovementRequest } from "@ca
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { notFound, badRequest, forbidden } from "../lib/errors";
 import { ensureDay } from "./day.service";
-import { assertCalendarDate, assertOpenPeriod, financialNow, movementEffectiveAt } from "../lib/period-guard";
+import { assertCalendarDate, assertOpenPeriod, financialNow, movementEffectiveAt, operatingDay } from "../lib/period-guard";
 import { toMovement } from "./mappers";
 
 function nowTime(): string {
@@ -35,6 +35,10 @@ export async function addMovement(input: CreateMovementRequest): Promise<Movemen
   }
   // INC-03: también los pendientes (antes un "2026-02-30" creaba un Day inexistente).
   assertCalendarDate(input.date, "El movimiento");
+  // INC-R2-03: un pendiente tampoco puede ser posterior al día operativo (antes un "2099-01-01" quedaba en
+  // Gastos pendientes sin poder aprobarse y creaba ese Day).
+  const opDay = await operatingDay();
+  if (input.date > opDay) throw badRequest(`El movimiento no puede tener una fecha posterior al día operativo (${opDay}).`);
   await ensureDay(input.date);
   const row = await prisma.movement.create({
     data: {
@@ -93,7 +97,13 @@ export async function updateMovement(
     if (exists.status === "confirmed") await assertOpenPeriod(exists.date, movementEffectiveAt(exists));
     if (merged.status === "confirmed") await assertOpenPeriod(merged.date, movementEffectiveAt({ date: merged.date, createdAt: exists.createdAt }));
   }
-  if (patch.date !== undefined && patch.date !== exists.date) await ensureDay(patch.date);
+  if (patch.date !== undefined && patch.date !== exists.date) {
+    // INC-R2-03: misma validación que al crear (fecha real y no posterior al día operativo).
+    assertCalendarDate(patch.date, "El movimiento");
+    const opDay = await operatingDay();
+    if (patch.date > opDay) throw badRequest(`El movimiento no puede tener una fecha posterior al día operativo (${opDay}).`);
+    await ensureDay(patch.date);
+  }
   const row = await prisma.movement.update({ where: { id }, data: patch });
   return toMovement(row);
   });

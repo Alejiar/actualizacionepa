@@ -18,7 +18,9 @@ export async function statement(req: Request, res: Response) {
 export async function registerPayment(req: Request, res: Response) {
   // F14: `baseAmount` = parte del pago que el operador asigna a devolver base (el resto, comisión).
   const { amount, medium, notes, baseAmount } = req.body;
-  res.status(201).json(await svc.registerPayment(req.params.id, Number(amount), medium, notes, getActor(req), baseAmount));
+  // INC-R2-02: solo número o texto numérico. Antes Number(true) registraba un pago de $1 y Number([5000]) uno de $5.000.
+  const n = typeof amount === "number" ? amount : typeof amount === "string" && amount.trim() !== "" ? Number(amount) : NaN;
+  res.status(201).json(await svc.registerPayment(req.params.id, n, medium, notes, getActor(req), baseAmount));
 }
 
 export async function payCredit(req: Request, res: Response) {

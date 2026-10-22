@@ -86,10 +86,12 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
   // ANCLA HISTÓRICA: solo cierres registrados hasta el final del día consultado. Antes se
   // tomaba SIEMPRE el último cierre, y consultar un día anterior a él devolvía el capital
   // nuevo (un cierre posterior reescribía el pasado).
+  // INC-R2-06: sin `snapshot` (≈200 KB por mes, con la lista de pedidos). Leerlos todos en cada cálculo
+  // hacía que el esperado, el Historial y el Cierre se volvieran más lentos con cada mes cerrado.
   const closes = await prisma.monthlyClose.findMany({
     where: { branchId: null },
     orderBy: { closedAt: "asc" },
-    select: { closedAt: true, initialCash: true, initialBank: true, snapshot: true },
+    select: { closedAt: true, initialCash: true, initialBank: true },
   });
   const anchor = [...closes].reverse().find(c => c.closedAt.getTime() <= cutoff.getTime());
 
@@ -106,7 +108,10 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     // El primer cierre posterior guarda en su snapshot el capital que reemplazó
     // (`capitalAnterior`). Los cierres antiguos no lo tienen: entonces solo queda
     // Settings (puede ya reflejar un capital posterior; ver CLAUDE_CORRECCION_12_DEFECTOS.md).
-    const prev = (closes[0]?.snapshot as { capitalAnterior?: { cash: number; bank: number } } | null)?.capitalAnterior;
+    const first = closes.length
+      ? await prisma.monthlyClose.findFirst({ where: { branchId: null }, orderBy: { closedAt: "asc" }, select: { snapshot: true } })
+      : null;
+    const prev = (first?.snapshot as { capitalAnterior?: { cash: number; bank: number } } | null)?.capitalAnterior;
     baseCash = prev?.cash ?? settings?.initialCash ?? 0;
     baseBank = prev?.bank ?? settings?.initialBank ?? 0;
     // NEW11: el capital de Configuración rige desde la instalación (no puede cambiarse tras el primer
