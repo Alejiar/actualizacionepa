@@ -278,7 +278,7 @@ function ManualOrderModal({ branches, drivers, defaultBranchId, onClose, onSaved
 
   return (
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="glass-strong rounded-3xl p-6 w-full max-w-md space-y-4">
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-md space-y-4">
         <h2 className="font-black text-lg">Registrar pedido manualmente</h2>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
@@ -332,7 +332,7 @@ function WebhookModal({ branch, webhookUrl, onClose }: { branch: Branch; webhook
   const copy = () => { navigator.clipboard.writeText(webhookUrl); toast.success("URL copiada"); };
   return (
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="glass-strong rounded-3xl p-6 w-full max-w-lg space-y-4">
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-lg space-y-4">
         <h2 className="font-black text-lg">Configurar Webhook — {branch.name}</h2>
         <p className="text-sm text-muted-foreground">
           Configura esta URL en Shipday para recibir pedidos en tiempo real cuando cambien a estado <strong>DELIVERED</strong>.

@@ -313,7 +313,22 @@ async function main() {
       const repT = await closes.getMonthlyReport(yesterday.slice(0, 7)); assert.ok(repT);
       const sy = await days.getDaySummary(yesterday); assert.equal(sy.initialTotal + sy.ingresos - sy.egresos, sy.finalTotal);
     });
-    await check("D7-ADDMOV", "Agregar por solicitud un movimiento de Caja (gasto) a un día cerrado", async () => {
+    await check("D7-ADELANTADO", "Corrección aprobada de un día cerrado por adelantado (aún futuro en el reloj)", async f => {
+      // Auditoría visual 21-oct-2026: con el 22 cerrado el 21, aprobar un egreso olvidado del 22
+      // fallaba con "la fecha del dinero no puede ser futura".
+      const tomorrow = dayBefore(today, -1), op = dayBefore(today, -2);
+      await closeDay(today); await closeDay(tomorrow);
+      const before = await ok(`/shifts/${op}/expected`, "GET", undefined, admin);
+      assert.equal((await api("/bank-transactions", "POST", { type: "egreso", medium: "cash", amount: 1000, description: "Olvido", date: tomorrow, noCounterpart: true }, oper)).status, 409, "directo: día cerrado");
+      const req = await ok("/edit-requests", "POST", { requestType: "create", entityType: "BankTransaction", entityId: "nuevo", entityLabel: "", changes: { date: tomorrow, type: "egreso", medium: "cash", amount: 1000, description: "Parqueadero olvidado" }, reason: "x" });
+      f.review = (await api(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin)).status;
+      assert.equal(f.review, 200);
+      const after = await ok(`/shifts/${op}/expected`, "GET", undefined, admin);
+      assert.deepEqual([after.expectedCash, after.expectedBank], [before.expectedCash - 1000, before.expectedBank]);
+      const corr = (await p.shiftClose.findFirstOrThrow({ where: { date: tomorrow, shift: "close" } })).corrections as any[];
+      assert.deepEqual([corr.length, corr[0].cashDelta], [1, -1000]);
+    });
+    await check("D7-ADDMOV","Agregar por solicitud un movimiento de Caja (gasto) a un día cerrado", async () => {
       await closeDay(yesterday); const before = await bal();
       const req = await ok("/edit-requests", "POST", { requestType: "create", entityType: "Movement", entityId: "nuevo", entityLabel: "", changes: { date: yesterday, type: "egreso", medium: "cash", amount: 3000, description: "Gasto olvidado", category: 3 }, reason: "x" });
       await ok(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin);

@@ -119,7 +119,7 @@ export default function HistoryPage() {
 
       {openDate && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setOpenDate(null)}>
-          <div className="glass-strong rounded-3xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+          <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-bold capitalize">{prettyDate(openDate)}</h3>
               <button onClick={() => setOpenDate(null)} className="p-2 rounded-lg hover:bg-secondary"><X className="h-4 w-4" /></button>

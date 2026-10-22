@@ -238,6 +238,13 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   domiciliario, por la fecha del servicio). Ganancia = ventas − gastos − nómina, igual en
   `getDaySummary` (`gananciaPorHora`), `getMonthlyReport` (`sales.orders/hourly`) y el Excel (fila
   "Clientes por hora" al final para no mover las filas fijas). Si cambias una, cambia las tres.
+- **NEW13 (21-oct-2026):** con la caja adelantada, un instante "futuro" en el reloj pero hasta el día
+  operativo NO es futuro: si su día ya tiene Cierre (cerrado por adelantado) sigue la regla de días
+  cerrados (409 directo, permitido como corrección D7 aprobada). Solo lo posterior al día operativo
+  es "futuro" (`assertOpenInstant`). Regresión: `D7-ADELANTADO` en `tests/claude-f14-d7.ts`.
+- **NEW12 (21-oct-2026):** toda ventana emergente (overlay `fixed inset-0` propio o `DialogContent`)
+  lleva `max-h-[92vh] overflow-y-auto` en el panel: en pantallas bajas (588 px) el detalle del día
+  cortaba sus botones y no se podía desplazar.
 - **NEW09 (21-oct-2026):** `/domiciliarios` (pantalla antigua que daba bases como movimientos de
   Caja fuera del libro `BaseTransaction`) solo redirige a `/shipday/domiciliarios`. No la revivas.
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir

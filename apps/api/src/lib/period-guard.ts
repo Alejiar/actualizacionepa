@@ -93,10 +93,12 @@ export async function assertOpenInstant(at?: Date, label = "La operación", bran
   at ??= await moneyNow();
   if (!Number.isFinite(at.getTime())) throw badRequest(`${label}: fecha inválida.`);
   if (at.getTime() > Date.now()) {
-    // Única excepción: un instante dentro del día operativo cuando este ya va por delante del
-    // calendario (Cierre registrado antes de medianoche). Cualquier otro futuro se rechaza.
+    // Única excepción: la caja va por delante del calendario (Cierre registrado antes de
+    // medianoche) y el instante cae en un día hasta el operativo. Los días cerrados por adelantado
+    // siguen la regla de días cerrados (409, o corrección aprobada D7); antes una corrección
+    // aprobada de un día cerrado por adelantado se rechazaba como "futura".
     const op = await operatingDay();
-    if (op <= todayBogota() || toBogotaDateStr(at) !== op) {
+    if (op <= todayBogota() || toBogotaDateStr(at) > op) {
       // Un día que ya tiene Cierre se informa como tal (409), no como "futuro".
       await assertOpenPeriod(toBogotaDateStr(at), at, label, branchId);
       throw badRequest(`${label}: la fecha del dinero no puede ser futura.`);

@@ -291,7 +291,7 @@ function PayCreditModal({ driver, onClose, onDone }: { driver: DriverDebt; onClo
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="glass-strong rounded-3xl p-6 w-full max-w-sm space-y-5 shadow-2xl">
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-sm space-y-5 shadow-2xl">
         <div className="flex items-center justify-between">
           <h2 className="font-black text-lg">Pagar a domiciliario</h2>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-secondary transition text-muted-foreground">✕</button>

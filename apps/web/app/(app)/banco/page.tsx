@@ -399,7 +399,7 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="glass-strong rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl">
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-md space-y-4 shadow-2xl">
         <div className="flex items-center justify-between">
           <h2 className="font-black text-lg">Descontar de deuda</h2>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-secondary transition text-muted-foreground">✕</button>

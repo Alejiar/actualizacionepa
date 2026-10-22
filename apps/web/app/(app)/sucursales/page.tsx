@@ -223,7 +223,7 @@ function BranchForm({ initial, onClose, onSaved }: { initial: Branch | null; onC
 
   return (
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="glass-strong rounded-3xl p-6 w-full max-w-md space-y-4">
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-md space-y-4">
         <h2 className="text-lg font-black">{initial ? "Editar sucursal" : "Nueva sucursal"}</h2>
         <form onSubmit={save} className="space-y-3">
           <Field label="Nombre *" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} required />

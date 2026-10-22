@@ -291,7 +291,7 @@ export default function WorkersPage() {
       {/* Modal agregar */}
       {adding && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setAdding(false)}>
-          <div className="glass-strong rounded-3xl p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+          <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-sm" onClick={e => e.stopPropagation()}>
             <h3 className="text-xl font-bold mb-4">Nuevo trabajador</h3>
             <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Nombre" className="w-full glass rounded-xl px-4 py-3 outline-none mb-3" />
             <div className="grid grid-cols-2 gap-2">
@@ -352,7 +352,7 @@ function RenameWorkerModal({ worker, linkedToShipday, onClose, onSave }: {
   const invalid = !clean || clean.length > 80 || clean === worker.name;
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="glass-strong rounded-3xl p-6 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
         <h3 className="font-black text-lg">Renombrar trabajador</h3>
         <p className="text-xs text-muted-foreground">Nombre actual: <b>{worker.name}</b>. Es el mismo trabajador: sus pagos e historial se conservan.</p>
         <input value={name} onChange={e => setName(e.target.value)} autoFocus maxLength={80} aria-label="Nuevo nombre"
