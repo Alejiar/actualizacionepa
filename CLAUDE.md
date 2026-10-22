@@ -245,6 +245,9 @@ sigue encontrando el día de ayer disponible para cerrarlo.
 - **NEW15 (22-oct-2026):** `closeMonth` se rechaza si hay dinero con hora posterior a `closedAt` (registrado con la caja
   adelantada con hora explícita del día operativo): el capital declarado ya lo incluía y el esperado lo
   volvía a sumar. Regresión `MES-FUTURO` en `tests/claude-f14-d7.ts`.
+- **NEW17 (22-oct-2026):** eliminar por solicitud el PAGO al domiciliario de un turno por hora borra el
+  TURNO completo con sus cobros al cliente (`deleteHourlyBankTx`, regla vigente). La solicitud lo avisa en su
+  etiqueta (`createRequest`); si cambias ese efecto, cambia también el aviso.
 - **NEW12 (21-oct-2026):** toda ventana emergente (overlay `fixed inset-0` propio o `DialogContent`)
   lleva `max-h-[92vh] overflow-y-auto` en el panel: en pantallas bajas (588 px) el detalle del día
   cortaba sus botones y no se podía desplazar.
