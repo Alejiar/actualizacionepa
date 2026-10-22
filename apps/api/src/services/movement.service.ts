@@ -3,7 +3,7 @@ import type { CreateMovementRequest, Movement, UpdateMovementRequest } from "@ca
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { notFound, badRequest, forbidden } from "../lib/errors";
 import { ensureDay } from "./day.service";
-import { assertOpenPeriod, financialNow, movementEffectiveAt } from "../lib/period-guard";
+import { assertCalendarDate, assertOpenPeriod, financialNow, movementEffectiveAt } from "../lib/period-guard";
 import { toMovement } from "./mappers";
 
 function nowTime(): string {
@@ -33,6 +33,8 @@ export async function addMovement(input: CreateMovementRequest): Promise<Movemen
   if ((input.status ?? "confirmed") === "confirmed") {
     await assertOpenPeriod(input.date, movementEffectiveAt({ date: input.date, createdAt }));
   }
+  // INC-03: también los pendientes (antes un "2026-02-30" creaba un Day inexistente).
+  assertCalendarDate(input.date, "El movimiento");
   await ensureDay(input.date);
   const row = await prisma.movement.create({
     data: {

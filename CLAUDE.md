@@ -253,6 +253,11 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   cortaba sus botones y no se podía desplazar.
 - **NEW09 (21-oct-2026):** `/domiciliarios` (pantalla antigua que daba bases como movimientos de
   Caja fuera del libro `BaseTransaction`) solo redirige a `/shipday/domiciliarios`. No la revivas.
+- **INC-01 (auditoría final, 22-oct-2026):** `POST /shifts` valida el conteo en el SERVIDOR con las
+  mismas denominaciones del asistente (`ShiftCloseWizard.tsx`): billetes 100.000…1.000, monedas
+  1.000…50, cantidades enteras ≥ 0, banco contado entero ≥ 0. Antes aceptaba cantidades negativas o
+  "billetes" inventados y se fabricaba un Cierre verde sin la plata. Si cambias las denominaciones,
+  cambia ambas listas. Los tests cuentan con `tests/real-count.ts`.
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir
   este valor a `/shifts/current-date` — nunca calcular "hoy" directo.
 - `expectedAmount`/`bankExpected` de un cierre **siempre** los calcula el

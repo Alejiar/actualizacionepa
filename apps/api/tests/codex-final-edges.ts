@@ -9,13 +9,14 @@ import * as closes from '../src/services/close.service';
 import * as edits from '../src/services/edit-request.service';
 import * as days from '../src/services/day.service';
 import {todayBogota,toBogotaDateStr} from '../src/lib/date-range';
+import { realCount } from "./real-count";
 const u=new URL(process.env.DATABASE_URL!);assert.equal(u.pathname,'/cashbuddy_codex_definitive_20261014');assert.ok(['localhost','127.0.0.1'].includes(u.hostname));
 let admin:any,user:any,branch:any,driver:any;const results:any[]=[];const today=todayBogota();
 const server=createServer().listen(0,'127.0.0.1');let origin='';
 const token=(x:any)=>signToken({sub:x.id,email:x.email,name:x.name,role:x.role,tv:x.tokenVersion});
 async function api(route:string,method='GET',body?:any,who:any=user){const r=await fetch(origin+'/api'+route,{method,headers:{Authorization:'Bearer '+token(who),'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return{status:r.status,body:await r.json().catch(()=>null)}}
 async function reset(){const tables=await p.$queryRawUnsafe<any[]>(`SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename <> '_prisma_migrations'`);await p.$executeRawUnsafe('TRUNCATE TABLE '+tables.map(x=>'"'+x.tablename+'"').join(',')+' CASCADE');await p.settings.create({data:{id:'singleton',initialCash:100000,initialBank:100000,setupComplete:true,termsAcceptedAt:new Date()}});admin=await p.user.create({data:{id:'edge-admin',email:'admin@edge.invalid',name:'Admin',role:'admin',passwordHash:'fake'}});user=await p.user.create({data:{id:'edge-user',email:'user@edge.invalid',name:'User',role:'user',passwordHash:'fake'}});branch=await p.branch.create({data:{name:'Edge branch',apiKeyEnc:'test-only'}});driver=await p.driver.create({data:{name:'Edge driver',shipdayDriverId:'edge1',branchId:branch.id}})}
-async function dayClose(){return api('/shifts','POST',{date:today,shift:'close',bankCounted:(await dash.getExpectedBalancesForDate(today)).bank,denominations:{bills:[{value:(await dash.getExpectedBalancesForDate(today)).cash,qty:1}],coins:[]}},admin)}
+async function dayClose(){return api('/shifts','POST',{date:today,shift:'close',bankCounted:(await dash.getExpectedBalancesForDate(today)).bank,denominations:realCount((await dash.getExpectedBalancesForDate(today)).cash)},admin)}
 async function check(id:string,name:string,fn:(f:any)=>Promise<void>){await reset();const f:any={};try{await fn(f);results.push({id,name,ok:true,f});console.log('OK '+id)}catch(e){results.push({id,name,ok:false,f,error:String((e as Error).message)});console.log('FAIL '+id+' '+JSON.stringify(f))}}
 async function main(){await new Promise<void>(r=>server.once('listening',r));origin='http://127.0.0.1:'+(server.address() as any).port;
 try{

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { realCount } from "./real-count";
 
 const u = new URL(process.env.DATABASE_URL || "invalid:");
 if (u.pathname !== "/cashbuddy_claude_decisiones" || !["localhost", "127.0.0.1"].includes(u.hostname)) throw Error("Solo BD temporal local cashbuddy_claude_decisiones");
@@ -61,7 +62,7 @@ async function main() {
   const bal = (date = today) => dash.getExpectedBalancesForDate(date);
   const closeDay = async (date: string) => {
     const e = await ok(`/shifts/${date}/expected`, "GET", undefined, admin);
-    return ok("/shifts", "POST", { date, shift: "close", denominations: { bills: [{ value: 1, qty: e.expectedCash }], coins: [] }, bankCounted: e.expectedBank }, admin);
+    return ok("/shifts", "POST", { date, shift: "close", denominations: realCount(e.expectedCash), bankCounted: e.expectedBank }, admin);
   };
   const order = (body: any, who: any = oper) => api("/sd/orders/manual", "POST", { branchId: branch.id, ...body }, who);
   const results: any[] = [];

@@ -24,6 +24,7 @@ import * as days from "../src/services/day.service";
 import * as adminSvc from "../src/services/admin.service";
 import * as excel from "../src/services/excel.service";
 import * as branches from "../src/services/branch.service";
+import { realCount } from "./real-count";
 
 const url = new URL(process.env.DATABASE_URL!);
 assert.equal(url.pathname, "/cashbuddy_codex_definitive_20261014");
@@ -69,7 +70,7 @@ async function check(id: string, name: string, work: (facts: any) => Promise<voi
 function code(status: number) { return (error: any) => error.status === status || error.statusCode === status; }
 async function closeDay() {
   const expected = await dashboard.getExpectedBalancesForDate(today);
-  const r = await api("/shifts", "POST", { date: today, shift: "close", bankCounted: expected.bank, denominations: { bills: [{ value: expected.cash, qty: 1 }], coins: [] } }, admin);
+  const r = await api("/shifts", "POST", { date: today, shift: "close", bankCounted: expected.bank, denominations: realCount(expected.cash) }, admin);
   assert.equal(r.status, 201); return r.body;
 }
 const income = (amount = 10000) => bank.create({ type: "ingreso", medium: "bank", amount, description: "Ingreso ficticio", noCounterpart: true });

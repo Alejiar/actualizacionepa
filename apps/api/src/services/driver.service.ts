@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { assertOpenInstant, moneyNow } from "../lib/period-guard";
+import { assertMoney } from "../lib/money-validation";
 import { badRequest, notFound } from "../lib/errors";
 import { bogotaDayRange, todayBogota } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, bankLinkedBaseNote } from "../lib/balance-markers";
@@ -108,7 +109,9 @@ export async function getDriverDetail(id: string) {
 export async function registerPayment(driverId: string, amount: number, medium: "cash" | "bank", notes?: string, actor?: ActorLike, baseAmount = 0) {
   return moneyTransaction(async () => {
   await assertOpenInstant(undefined, "El pago del domiciliario");
+  // INC-02: mismo tope que el resto (antes un monto > INT4 llegaba a PostgreSQL y respondía 500).
   if (!Number.isSafeInteger(amount) || amount <= 0) throw badRequest("Monto inválido");
+  assertMoney(amount);
   if (medium !== "cash" && medium !== "bank") throw badRequest("Medio de pago inválido (cash o bank)");
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw notFound("Domiciliario no encontrado");

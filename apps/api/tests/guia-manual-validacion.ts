@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { realCount } from "./real-count";
 
 const db = new URL(process.env.DATABASE_URL || "invalid:");
 if (db.pathname !== "/cashbuddy_claude_guia" || !["localhost", "127.0.0.1"].includes(db.hostname)) throw Error("Solo la copia temporal cashbuddy_claude_guia");
@@ -89,7 +90,7 @@ async function main() {
   await ok(`/workers/${wk.id}`, "PATCH", { active: true });
   assert.equal(await p.movement.count({ where: { workerId: wk.id } }), 1); out.push("OK E15 renombrar/desactivar con historial conservado");
   // E16 — Cierre.
-  const close = await ok("/shifts", "POST", { date: today, shift: "close", denominations: { bills: [{ value: 1, qty: 107600 }], coins: [] }, bankCounted: 147400 }, admin);
+  const close = await ok("/shifts", "POST", { date: today, shift: "close", denominations: realCount(107600), bankCounted: 147400 }, admin);
   assert.deepEqual([close.difference, close.bankDifference], [0, 0]); out.push("OK E16 cierre 107.600 / 147.400, diferencias 0");
   assert.equal((await api("/bank-transactions", "POST", { type: "ingreso", medium: "cash", amount: 1, description: "tras cierre", noCounterpart: true })).status, 409);
   // E17 — D7.

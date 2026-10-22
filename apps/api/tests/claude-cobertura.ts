@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { realCount } from "./real-count";
 
 const u = new URL(process.env.DATABASE_URL || "invalid:");
 if (u.pathname !== "/cashbuddy_claude_cobertura" || !["localhost", "127.0.0.1"].includes(u.hostname)) throw Error("Solo BD temporal local cashbuddy_claude_cobertura");
@@ -363,7 +364,7 @@ async function main() {
     await step("SHIFT-01", "Caja/turnos", "Día operativo, esperado, turno AM, consulta, listar; eliminar un cierre se rechaza", async () => {
       await ex("GET", "/shifts/current-date", undefined, oper, 200, b => assert.equal(b.date, today));
       const e = await ex("GET", `/shifts/${today}/expected`, undefined, oper, 200);
-      const am = await ex("POST", "/shifts", { date: today, shift: "AM", denominations: { bills: [{ value: 1, qty: e.expectedCash }], coins: [] }, bankCounted: e.expectedBank }, oper, 201, b => assert.deepEqual([b.difference, b.bankDifference], [0, 0]));
+      const am = await ex("POST", "/shifts", { date: today, shift: "AM", denominations: realCount(e.expectedCash), bankCounted: e.expectedBank }, oper, 201, b => assert.deepEqual([b.difference, b.bankDifference], [0, 0]));
       await ex("GET", `/shifts/${today}`, undefined, oper, 200, b => assert.ok(b.length >= 1));
       await ex("GET", `/shifts?from=${today}&to=${today}`, undefined, oper, 200);
       await ex("DELETE", `/shifts/${am.id}`, undefined, admin, 409);

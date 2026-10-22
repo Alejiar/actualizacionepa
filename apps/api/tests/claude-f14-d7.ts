@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { realCount } from "./real-count";
 
 const u = new URL(process.env.DATABASE_URL || "invalid:");
 if (u.pathname !== "/cashbuddy_claude_f14" || !["localhost", "127.0.0.1"].includes(u.hostname)) throw Error("Solo BD temporal local cashbuddy_claude_f14");
@@ -66,7 +67,7 @@ async function main() {
   const basePending = async (d: any) => (await ok(`/sd/drivers/${d.id}`)).basePending as number;
   const closeDay = async (date: string) => {
     const e = await ok(`/shifts/${date}/expected`, "GET", undefined, admin);
-    return ok("/shifts", "POST", { date, shift: "close", denominations: { bills: [{ value: 1, qty: e.expectedCash }], coins: [] }, bankCounted: e.expectedBank }, admin);
+    return ok("/shifts", "POST", { date, shift: "close", denominations: realCount(e.expectedCash), bankCounted: e.expectedBank }, admin);
   };
   const results: any[] = [];
   async function check(id: string, name: string, fn: (f: any) => Promise<void>) {
