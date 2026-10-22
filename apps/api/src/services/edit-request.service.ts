@@ -126,13 +126,25 @@ export async function createRequest(data: {
   if (requestType === "edit" && Object.keys(data.changes).length === 0) {
     throw badRequest("Debes especificar al menos un campo a cambiar");
   }
+  // NEW17 (auditoría 3, 22-oct-2026): eliminar el pago al domiciliario de un turno por hora borra el
+  // TURNO completo (deleteHourlyBankTx), incluidos los cobros al cliente. El admin solo veía
+  // "Salida banco · $20.000" y el banco bajaba también por el cobro. Se avisa en la solicitud.
+  let entityLabel = data.entityLabel;
+  if (requestType === "delete" && data.entityType === "BankTransaction") {
+    const tx = await prisma.bankTransaction.findUnique({ where: { id: data.entityId }, select: { type: true, hourlyShiftId: true } });
+    if (tx?.hourlyShiftId && tx.type === "egreso") {
+      const cobros = await prisma.bankTransaction.aggregate({ where: { hourlyShiftId: tx.hourlyShiftId, type: "ingreso" }, _sum: { amount: true } });
+      const cobrado = cobros._sum.amount ?? 0;
+      entityLabel += ` — ⚠️ borra el TURNO por hora completo: su pago al domiciliario y ${cobrado ? `los cobros al cliente ($${cobrado.toLocaleString("es-CO")})` : "su deuda al cliente"}`;
+    }
+  }
   return prisma.editRequest.create({
     data: {
       requesterId: data.requesterId,
       requestType,
       entityType: data.entityType,
       entityId: data.entityId,
-      entityLabel: data.entityLabel,
+      entityLabel,
       changes: data.changes,
       reason: data.reason,
     },

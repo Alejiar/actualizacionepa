@@ -21,6 +21,7 @@ function formatCOP(n: number) { return "$" + n.toLocaleString("es-CO"); }
 export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
   const [step, setStep] = useState(1);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [branchesLoaded, setBranchesLoaded] = useState(false);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [debtors, setDebtors] = useState<Client[]>([]);
 
@@ -44,9 +45,12 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
   useEffect(() => {
     if (!open) return;
     Promise.all([api.getBranches(), api.getDebtors()]).then(([b, d]) => {
-      setBranches(b);
+      // Una sucursal desactivada no recibe pedidos (el servidor responde 400): no se ofrece.
+      const activas = b.filter(x => x.active);
+      setBranches(activas);
+      setBranchesLoaded(true);
       setDebtors(d);
-      if (b.length === 1) setBranchId(b[0].id);
+      if (activas.length === 1) setBranchId(activas[0].id);
     }).catch(() => {});
   }, [open]);
 
@@ -120,7 +124,7 @@ export function ManualOrderWizard({ open, onOpenChange, onDone }: Props) {
           <div className="space-y-2">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Sucursal</label>
             {branches.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Cargando…</p>
+              <p className="text-sm text-muted-foreground">{branchesLoaded ? "No hay sucursales activas. Activa una en Sucursales para registrar pedidos." : "Cargando…"}</p>
             ) : (
               <div className="space-y-2">
                 {branches.map(b => (

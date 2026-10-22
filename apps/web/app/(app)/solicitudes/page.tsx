@@ -26,6 +26,8 @@ const ENTITY_LABELS: Record<string, string> = {
   DriverPayment: "Pago a domiciliario",
   BaseTransaction: "Base",
   ClientDebt: "Deuda de cliente",
+  ClientDebtPayment: "Abono de cliente",
+  ShiftClose: "Cierre de caja",
   Conversion: "Conversión",
   HourlyShift: "Turno por hora",
 };

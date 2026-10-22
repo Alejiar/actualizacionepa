@@ -93,6 +93,15 @@ export default function ReportesPage() {
         <input type="month" value={reportMonth} onChange={e => setReportMonth(e.target.value)}
           className="px-3 py-2 rounded-xl border border-border bg-background text-sm" />
       </div>
+      {/* Auditoría 3 (22-oct-2026): sumar las utilidades por sucursal no da la global, porque estos
+          conceptos no tienen sucursal y se repiten completos en cada vista. */}
+      {branchId && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Vista por sucursal: solo los domicilios y las bases son de esta sucursal. Gastos, nómina, clientes por hora y
+          deudas de clientes son de toda la empresa y aparecen completos en cada sucursal; no sumes las utilidades de
+          las sucursales, usa la vista &quot;Todas las sucursales&quot;.
+        </p>
+      )}
 
       {/* Reporte mensual estilo Excel */}
       {report && <MonthlyReportPanel report={report} monthClosed={closes.some(c => c.month === reportMonth)} />}
