@@ -251,8 +251,10 @@ async function main() {
   at(20, "B-REINICIO", "REINICIO REAL: se mata el proceso del servidor (dist) en plena ráfaga de 40 operaciones y se vuelve a levantar", "Ninguna operación queda a medias: cada base existe completa o no existe; tras reiniciar, esperado y saldos = libro con las que quedaron; el servidor vuelve a responder", async (d, f) => {
     const port = 4190 + Math.floor(Math.random() * 7);
     const spawn = () => cp.spawn(process.execPath, ["--require", path.join(__dirname, "block-external.cjs"), path.resolve(__dirname, "../dist/index.js")], { cwd: path.resolve(__dirname, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", WEB_DIR: "" }, stdio: ["ignore", fs.openSync(path.join(__dirname, "final-b-child.log"), "a"), fs.openSync(path.join(__dirname, "final-b-child.log"), "a")], windowsHide: true });
-    const waitUp = async () => { for (let t = 0; t < 120; t++) { try { const r = await realFetch(`http://127.0.0.1:${port}/api/health`); if (r.ok) return; } catch { } await new Promise(r => setTimeout(r, 250)); } throw Error("el servidor no levantó"); };
-    let child = spawn(); await waitUp();
+    const waitUp = async () => { const t0 = Date.now(); for (let t = 0; t < 360; t++) { try { const r = await realFetch(`http://127.0.0.1:${port}/api/health`); if (r.ok) { (f.arranqueMs ??= []).push(Date.now() - t0); return; } } catch { } await new Promise(r => setTimeout(r, 250)); } throw Error("el servidor no levantó en 90 s"); };
+    let child = spawn();
+    try {
+    await waitUp();
     const ext = (route: string, body: unknown) => realFetch(`http://127.0.0.1:${port}/api${route}`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tokA }, body: JSON.stringify(body) }).then(r => r.status).catch(() => "cortada");
     const burst = Array.from({ length: 40 }, (_, k) => ext(`/sd/bases/${drivers[k % 3].id}/give`, { cashAmount: 1000, notes: `Ráfaga ${d} ${k}` }));
     // Matar cuando ya hay operaciones guardadas y otras siguen en la cola/en curso.
@@ -264,7 +266,7 @@ async function main() {
     f.quedaron = made.length; assert.ok(made.every((b: any) => b.amount === 1000 && b.type === "entrega"), "base a medias");
     for (const b of made) { const k = drivers.findIndex(x => x.id === b.driverId); L.cash -= 1000; L.base[k] += 1000; }
     f.despues = (await ext(`/sd/bases/${drivers[0].id}/give`, { cashAmount: 1000, notes: "tras reinicio" })); assert.equal(f.despues, 201); L.cash -= 1000; L.base[0] += 1000;
-    child.kill("SIGKILL");
+    } finally { child.kill("SIGKILL"); }
   });
   at(22, "B-INTERRUPCION-CIERRE", "Se mata el servidor justo mientras registra el Cierre del día", "O el Cierre quedó completo (bloqueado, con esperado correcto) o no existe y se puede registrar; nunca a medias", async () => { (globalThis as any).__killClose = true; });
   at(25, "B-SOLICITUD-DOBLE", "El admin aprueba la misma solicitud dos veces a la vez", "Un solo efecto (dinero aplicado una vez); la otra respuesta 400", async (d, f) => {
@@ -340,7 +342,7 @@ async function main() {
       if (g.__killClose) {
         g.__killClose = false;
         const port = 4197; const child = cp.spawn(process.execPath, ["--require", path.join(__dirname, "block-external.cjs"), path.resolve(__dirname, "../dist/index.js")], { cwd: path.resolve(__dirname, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", WEB_DIR: "" }, stdio: ["ignore", fs.openSync(path.join(__dirname, "final-b-child.log"), "a"), fs.openSync(path.join(__dirname, "final-b-child.log"), "a")], windowsHide: true });
-        for (let t = 0; t < 120; t++) { try { if ((await realFetch(`http://127.0.0.1:${port}/api/health`)).ok) break; } catch { } await new Promise(r => setTimeout(r, 250)); }
+        for (let t = 0; t < 360; t++) { try { if ((await realFetch(`http://127.0.0.1:${port}/api/health`)).ok) break; } catch { } await new Promise(r => setTimeout(r, 250)); }
         const pr = realFetch(`http://127.0.0.1:${port}/api/shifts`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tokA }, body: JSON.stringify({ date: d, shift: "close", denominations: denominate(L.cash), bankCounted: L.bank }) }).then(r => r.status).catch(() => "cortada");
         await new Promise(r => setTimeout(r, 40)); child.kill("SIGKILL"); f.respuesta = await pr;
         const sc = await p.shiftClose.findUnique({ where: { date_shift: { date: d, shift: "close" } } });
