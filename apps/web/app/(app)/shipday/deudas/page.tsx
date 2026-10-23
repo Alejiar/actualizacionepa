@@ -107,11 +107,13 @@ export default function DeudasPage() {
         <div className="glass-strong rounded-2xl p-4">
           <p className="text-xs text-muted-foreground">Deuda por comisiones</p>
           <p className="font-black text-2xl tnum text-red-500 mt-1">{formatCOP(totalDebt)}</p>
+          <p className="text-xs text-muted-foreground">{debtors.filter(d => (d.pendingDebt ?? 0) > 0).length} domiciliarios deben comisión</p>
         </div>
         <div className="glass-strong rounded-2xl p-4">
           <p className="text-xs text-muted-foreground">Base sin devolver</p>
           <p className="font-black text-2xl tnum text-amber-600 mt-1">{formatCOP(totalBase)}</p>
-          <p className="text-xs text-muted-foreground">{debtors.length} domiciliarios deben</p>
+          {/* Solo quienes deben BASE (F14: cuenta aparte). Antes contaba a todos los deudores. */}
+          <p className="text-xs text-muted-foreground">{debtors.filter(d => (d.basePending ?? 0) > 0).length} domiciliarios deben base</p>
         </div>
         <div className="glass-strong rounded-2xl p-4">
           <p className="text-xs text-muted-foreground">Total crédito (empresa debe)</p>

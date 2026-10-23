@@ -43,6 +43,7 @@ backups/
 # Excepción: las migraciones de Prisma SÍ deben versionarse (si no, otra sucursal
 # que clone el repo no tendría los cambios de esquema y el sistema fallaría).
 !apps/api/prisma/migrations/**/*.sql
+!apps/api/prisma/manual/*.sql
 
 # Editor
 .vscode/*

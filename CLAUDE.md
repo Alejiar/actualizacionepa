@@ -273,6 +273,11 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   capital declarado ya lo incluía (caso real "Shipday Septiembre" −1.760.000, registrado con la caja
   adelantada antes de NEW10). Regresión `MES-LEGADO` en `tests/claude-f14-d7.ts`. Las migraciones
   aplicadas en producción tienen checksums mezclados LF/CRLF; `migrate deploy` no los valida (probado).
+  La versión vieja de producción (783ecb1) BORRABA el historial de más de 2 meses al arrancar y cada 24 h
+  (`deleteOldData`: pedidos, movimientos, banco, pagos, bases, Cierres…); por eso los datos reales empiezan el
+  22-ago-2026. Esta versión lo desactivó (`order-cleanup.service.ts`, conservación permanente): no lo revivas.
+  La corrección previa a F14 de la base real está en `apps/api/prisma/manual/` (se ejecuta UNA vez, antes de
+  `db:deploy`, en la instalación de la empresa). En Deudas, cada tarjeta cuenta solo a quienes deben ESA cuenta.
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir
   este valor a `/shifts/current-date` — nunca calcular "hoy" directo.
 - `expectedAmount`/`bankExpected` de un cierre **siempre** los calcula el
