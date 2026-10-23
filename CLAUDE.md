@@ -266,6 +266,13 @@ sigue encontrando el día de ayer disponible para cerrarlo.
   `MonthlyClose.snapshot` de todos los cierres (≈200 KB c/u; INC-R2-06). Las pruebas de reinicio no
   usan el puerto 4190: `fetch` (WHATWG) lo rechaza como "bad port". Continuaciones con reloj simulado:
   `tests/run-r2.cjs` + `tests/fake-clock.cjs` (los servidores hijos siempre con `block-external.cjs`).
+- **Ensayo con la base real de la empresa (22-oct-2026):** producción corría 783ecb1 + un arreglo sin
+  commit (migración `20260921152248_monthly_close_commission_snapshot`, comisión congelada al cerrar el
+  mes), ya incorporado. **INC-R3-01:** en `getExpectedBalances`, un `Movement` REGISTRADO (`createdAt`)
+  antes del cierre de mes ancla no cuenta después de él aunque su fecha operativa sea posterior: el
+  capital declarado ya lo incluía (caso real "Shipday Septiembre" −1.760.000, registrado con la caja
+  adelantada antes de NEW10). Regresión `MES-LEGADO` en `tests/claude-f14-d7.ts`. Las migraciones
+  aplicadas en producción tienen checksums mezclados LF/CRLF; `migrate deploy` no los valida (probado).
 - La página de Caja (`apps/web/app/(app)/caja/page.tsx`) SIEMPRE debe pedir
   este valor a `/shifts/current-date` — nunca calcular "hoy" directo.
 - `expectedAmount`/`bankExpected` de un cierre **siempre** los calcula el

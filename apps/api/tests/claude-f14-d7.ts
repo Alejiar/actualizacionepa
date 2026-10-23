@@ -361,6 +361,18 @@ async function main() {
       await closes.closeMonth(prevMonthLast.slice(0, 7));
       assert.equal(await p.monthlyClose.count(), 1);
     });
+    await check("MES-LEGADO", "Movimiento registrado antes del cierre de mes con fecha posterior: no se descuenta dos veces", async f => {
+      // INC-R3-01 (base real, cierre de septiembre): con la versión anterior se registró "Shipday
+      // Septiembre" con la caja adelantada (fecha del día siguiente) y DESPUÉS se cerró el mes. El capital
+      // declarado ya lo incluía; contarlo tras el ancla dejaba la caja 1.760.000 abajo desde entonces.
+      for (let d = dayBefore(prevMonthLast, -1); d < today; d = dayBefore(d, -1)) await closeDay(d);
+      const close = await closes.closeMonth(prevMonthLast.slice(0, 7));
+      const before = await bal();
+      await p.day.upsert({ where: { date: today }, create: { date: today, initialCash: 0, initialBank: 0 }, update: {} });
+      await p.movement.create({ data: { date: today, category: 3, type: "egreso", medium: "cash", amount: 1760000, description: "Legado: registrado antes del cierre", status: "confirmed", createdAt: new Date(close.closedAt.getTime() - 86400000) } });
+      f.antes = before; f.despues = await bal();
+      assert.deepEqual(f.despues, before);
+    });
     await check("D7-MES","Mes cerrado: la solicitud no se aplica y queda pendiente", async f => {
       const m = await ok("/movements", "POST", { date: prevMonthLast, category: 1, type: "ingreso", medium: "cash", amount: 10000 }, admin);
       await closeDay(prevMonthLast);

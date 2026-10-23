@@ -140,8 +140,15 @@ async function getExpectedBalances(today: string, todayRange: { gte: Date; lte: 
     // al cobrar ya lo cubre `clientPays` (paidCash/paidBank).
     prisma.clientDebt.findMany({ where: { createdAt: cumRange, medium: { not: null } }, select: { amount: true, medium: true } }),
   ]);
+  // INC-R3-01 (ensayo con la base real, 22-oct-2026): un movimiento REGISTRADO antes del cierre de mes
+  // ya está dentro del capital declarado en ese cierre, aunque su fecha operativa sea posterior. Pasaba
+  // con la caja adelantada antes de NEW10/NEW15: el 30-sep, tras el Cierre del día (operativo = 1-oct),
+  // se registró "Shipday Septiembre" (−1.760.000, fecha 1-oct) y luego se cerró el mes; contarlo después
+  // del ancla lo restaba dos veces y toda la caja desde el 1-oct quedaba 1.760.000 abajo. Con las reglas
+  // actuales ya no puede ocurrir (no se cierra el mes con la caja adelantada ni con dinero posterior).
   const movements = movementRows.filter(m => {
     const t = movementEffectiveAt(m).getTime();
+    if (anchor && m.createdAt.getTime() <= periodStart.getTime()) return false;
     return t > periodStart.getTime() && t <= cutoff.getTime();
   });
 
