@@ -864,7 +864,7 @@ export interface MonthlyReport {
   expenses: { cash: number; bank: number; total: number };
   payroll: { cash: number; bank: number; total: number };
   bases: { previous?: number; given: number; returned: number; diff: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
-  commission: { pending: number; credit?: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[] };
+  commission: { pending: number; credit?: number; ok: boolean; pendingDrivers: { id: string; name: string; pendingDebt: number }[]; frozen?: boolean };
   transfers: { ingresos: number; egresos: number; diff: number; ok: boolean; pendingItems?: { id: string; name: string; pendingDebt: number }[] };
   clientDebt: { generated: number; paid: number; balance: number; normal: number; hourly: number; ok: boolean; pendingClients: { id: string; name: string; pendingDebt: number }[] };
   netProfit: number;

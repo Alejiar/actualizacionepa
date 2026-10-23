@@ -186,7 +186,10 @@ function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; mo
   // domiciliario/cliente es una sola posición neta actual, y el sistema no reconstruye deuda
   // histórica por mes. En un mes ya CERRADO eso confunde (parece que el mes quedó "sucio"), así
   // que se etiqueta como saldo actual. "Diferencia Bases" sí es del mes (ver close.service), no se etiqueta.
+  // Comisiones: desde el arreglo de producción del 21-sep-2026 un mes cerrado congela "cuánto
+  // debían al cerrar" (commission.frozen) y ya no cambia, así que solo se etiqueta si sigue en vivo.
   const liveNote = monthClosed ? "Saldo actual (no del mes ya cerrado)" : undefined;
+  const commissionLiveNote = monthClosed && !report.commission.frozen ? liveNote : undefined;
   return (
     <div className="glass-strong rounded-3xl p-5 space-y-4">
       <h2 className="font-black text-lg">📊 Reporte del mes — {report.month}</h2>
@@ -220,7 +223,7 @@ function MonthlyReportPanel({ report, monthClosed }: { report: MonthlyReport; mo
           label="Comisiones pendientes"
           ok={report.commission.ok}
           value={report.commission.pending}
-          subnote={liveNote}
+          subnote={commissionLiveNote}
           detail={!report.commission.ok ? "Domiciliarios que aún deben comisión de sus domicilios" : undefined}
           items={report.commission.pendingDrivers.map(d => ({ id: d.id, label: d.name, amount: d.pendingDebt }))}
           linkHref="/shipday/deudas"

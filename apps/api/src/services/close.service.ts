@@ -99,6 +99,19 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     .sort((a, b) => b.pendingDebt - a.pendingDebt);
   const commissionPending = pendingCommissionDrivers.reduce((s, d) => s + d.pendingDebt, 0);
   const creditTotal = driversWithDebt.reduce((s, d) => s + (d.creditAmount ?? 0), 0);
+  // Arreglo de producción (21-sep-2026): un mes YA CERRADO muestra la comisión pendiente
+  // CONGELADA al cerrar (commissionPending/commissionSnapshot), no la posición viva de hoy, que
+  // bajaba con cada pago posterior. Sin snapshot (cierre anterior al arreglo o mes abierto) = en
+  // vivo. debtReconciliation ("Domiciliarios hoy") sigue siempre en vivo. Sin `snapshot` (INC-R2-06).
+  const frozenClose = await prisma.monthlyClose.findFirst({
+    where: { month, branchId: branchId ?? null },
+    select: { commissionPending: true, commissionSnapshot: true },
+  });
+  const commissionFrozen = frozenClose?.commissionPending != null;
+  const reportCommissionPending = commissionFrozen ? frozenClose!.commissionPending! : commissionPending;
+  const reportCommissionDrivers = commissionFrozen
+    ? (Array.isArray(frozenClose!.commissionSnapshot) ? frozenClose!.commissionSnapshot as unknown as { id: string; name: string; pendingDebt: number }[] : [])
+    : pendingCommissionDrivers;
   // Total INFORMATIVO (no es otra deuda): base viva + comisión − crédito.
   const debtReconciliation = {
     total: basePendingAllTime + commissionPending - creditTotal,
@@ -185,7 +198,8 @@ export async function getMonthlyReport(month: string, branchId?: string) {
     // diffAllTime = base sin devolver de TODOS los tiempos (solo la usa el proyector de cierre para
     // la plata física realmente fuera). Ver getMonthCloseProjection.
     bases: { previous: basesPrevious, given: basesGiven, returned: basesPaid, diff: basesDiff, diffAllTime: basePendingAllTime, ok: basesDiff === 0, pendingDrivers: pendingBaseDrivers },
-    commission: { pending: commissionPending, credit: creditTotal, ok: commissionPending === 0, pendingDrivers: pendingCommissionDrivers },
+    // frozen = el valor viene del cierre del mes (no se recalculó en vivo).
+    commission: { pending: reportCommissionPending, credit: creditTotal, ok: reportCommissionPending === 0, pendingDrivers: reportCommissionDrivers, frozen: commissionFrozen },
     transfers: { ingresos: bankIng, egresos: bankEgr, diff: transferDiff, ok: pendingTransferMovs.length === 0, pendingItems: transferPendingItems },
     clientDebt: { generated: debtsGen, paid: debtsPaid, balance: clientDebtBalance, normal: clientDebtNormal, hourly: clientDebtHourly, ok: clientDebtBalance === 0, pendingClients },
     netProfit,
@@ -431,6 +445,10 @@ export async function closeMonth(month: string, branchId?: string, initialCash?:
       clientDebtBalance: report.clientDebt.balance,
       netProfit: report.netProfit,
       profitability: report.profitability,
+      // Congela la comisión pendiente AL CERRAR (report se calculó antes de existir este cierre,
+      // así que es el valor vivo de este momento). Ver getMonthlyReport.
+      commissionPending: report.commission.pending,
+      commissionSnapshot: report.commission.pendingDrivers,
       closedBy: actor?.id ?? null,
       closedByName: actor?.name ?? null,
     },

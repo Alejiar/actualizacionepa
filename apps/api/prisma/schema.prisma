@@ -432,6 +432,12 @@ model MonthlyClose {
   clientDebtBalance Int?
   netProfit         Int?
   profitability     Float?
+  // Comisión pendiente de domiciliarios CONGELADA al momento del cierre (migración
+  // 20260921152248, aplicada en producción el 21-sep-2026). pendingDebt es una posición viva:
+  // sin congelarla, el reporte de un mes ya cerrado bajaba con cada pago posterior.
+  // getMonthlyReport usa este valor cuando existe; null (cierres anteriores) = en vivo.
+  commissionPending   Int?
+  commissionSnapshot  Json? // [{id, name, pendingDebt}] de quién debía comisión al cerrar
   closedBy          String?
   closedByName      String?
   closedAt          DateTime @default(now())
