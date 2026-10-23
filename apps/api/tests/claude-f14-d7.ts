@@ -369,7 +369,7 @@ async function main() {
       const close = await closes.closeMonth(prevMonthLast.slice(0, 7));
       const before = await bal();
       await p.day.upsert({ where: { date: today }, create: { date: today, initialCash: 0, initialBank: 0 }, update: {} });
-      await p.movement.create({ data: { date: today, category: 3, type: "egreso", medium: "cash", amount: 1760000, description: "Legado: registrado antes del cierre", status: "confirmed", createdAt: new Date(close.closedAt.getTime() - 86400000) } });
+      await p.movement.create({ data: { date: today, time: "22:45", category: 3, type: "egreso", medium: "cash", amount: 1760000, description: "Legado: registrado antes del cierre", status: "confirmed", createdAt: new Date(close.closedAt.getTime() - 86400000) } });
       f.antes = before; f.despues = await bal();
       assert.deepEqual(f.despues, before);
     });
