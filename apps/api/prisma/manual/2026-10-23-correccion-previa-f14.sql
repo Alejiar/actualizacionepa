@@ -34,4 +34,13 @@ BEGIN
   IF ledger <> 0 THEN RAISE EXCEPTION 'El libro de base quedó en % (se esperaba 0)', ledger; END IF;
   RAISE NOTICE 'Corrección aplicada: libro de base = 0.';
 END $$;
+-- Decisión del dueño (23-oct-2026): la domiciliaria se OCULTA (desactivada). No debe nada y su libro
+-- de base queda en 0, así que no aparece en Deudas, Domiciliarios ni en los formularios. No se borra
+-- historia ni se toca dinero. OJO: la sincronización copia el estado activo desde Shipday; hay que
+-- desactivarla también en Shipday para que no vuelva a aparecer.
+UPDATE "Driver" SET active = false WHERE id = 'cmrav0a7u001cilk0pc5b3xpq' AND active = true;
+DO $$ BEGIN
+  IF (SELECT active FROM "Driver" WHERE id = 'cmrav0a7u001cilk0pc5b3xpq') THEN RAISE EXCEPTION 'La domiciliaria sigue activa'; END IF;
+  RAISE NOTICE 'Domiciliaria desactivada (oculta).';
+END $$;
 COMMIT;
