@@ -27,3 +27,11 @@ export async function applyToDriver(req: Request, res: Response) {
   const { driverId, baseAmount } = req.body;
   res.json(await driverSvc.applyBankToDriver(req.params.id, driverId, getActor(req), baseAmount));
 }
+
+export async function pairCandidates(req: Request, res: Response) {
+  res.json(await svc.pairCandidates(req.params.id));
+}
+
+export async function pair(req: Request, res: Response) {
+  res.json(await svc.pairExisting(req.params.id, req.body?.withId));
+}

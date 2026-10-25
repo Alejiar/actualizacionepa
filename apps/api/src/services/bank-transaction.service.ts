@@ -2,7 +2,7 @@ import { applyDebtDelta, applyBankToDriver, revertDriverApplication } from "./dr
 import { prisma, moneyTransaction } from "../lib/prisma";
 import { bogotaOpenRange, toBogotaDateStr } from "../lib/date-range";
 import { badRequest, conflict, notFound } from "../lib/errors";
-import { assertOpenInstant, financialNow, isOpenPeriod, operatingClock, parseFinancialTimestamp } from "../lib/period-guard";
+import { assertOpenInstant, assertReconcilable, financialNow, isOpenPeriod, operatingClock, parseFinancialTimestamp } from "../lib/period-guard";
 import { assertMoney } from "../lib/money-validation";
 import { BANK_LINKED_PAYMENT_NOTE, BANK_LINKED_BASE_PREFIX } from "../lib/balance-markers";
 import * as hourlySvc from "./hourly-client.service";
@@ -12,10 +12,82 @@ export async function list(params?: { type?: "ingreso" | "egreso"; from?: string
   if (params?.type) where.type = params.type;
   const dateRange = bogotaOpenRange(params?.from, params?.to);
   if (dateRange) where.date = dateRange;
-  return prisma.bankTransaction.findMany({
+  const rows = await prisma.bankTransaction.findMany({
     where,
     orderBy: { date: "desc" },
   });
+  // Conciliación (25-oct-2026): la contraparte puede estar en OTRO día (se cuadró después del
+  // Cierre). Se adjunta su resumen para que la lista del día la muestre cuadrada y no "falta
+  // contraparte" solo porque la otra mitad no cae en el rango consultado.
+  const pairIds = [...new Set(rows.flatMap(r => (r.pairId ? [r.pairId] : [])))];
+  if (!pairIds.length) return rows;
+  const halves = await prisma.bankTransaction.findMany({
+    where: { pairId: { in: pairIds } },
+    select: { pairId: true, type: true, date: true, description: true, amount: true },
+    orderBy: { date: "asc" },
+  });
+  return rows.map(r => {
+    const other = r.pairId ? halves.filter(h => h.pairId === r.pairId && h.type !== r.type) : [];
+    if (!other.length) return r;
+    return { ...r, pairPartner: { type: other[0].type, date: other[0].date, description: other[0].description, amount: other.reduce((t, h) => t + h.amount, 0) } };
+  });
+}
+
+const newPairId = () => `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+/** Movimiento (o su grupo mixto) que todavía puede recibir contraparte, con su importe total. */
+async function pairableGroup(id: string, label: string) {
+  const row = await prisma.bankTransaction.findUnique({ where: { id } });
+  if (!row) throw notFound(`${label} no existe.`);
+  const group = row.groupId ? await prisma.bankTransaction.findMany({ where: { groupId: row.groupId } }) : [row];
+  if (group.some(r => r.pairId)) throw conflict(`${label} ya tiene contraparte.`);
+  if (group.some(r => r.noCounterpart || r.debtApplied !== 0 || r.hourlyShiftId)) {
+    throw badRequest(`${label} no admite contraparte (está marcado sin contraparte o aplicado a una deuda/turno).`);
+  }
+  return { row, group, total: group.reduce((t, r) => t + r.amount, 0) };
+}
+
+/**
+ * Enlaza como contraparte dos movimientos YA registrados (por ejemplo, la salida del 28 y el
+ * ingreso que volvió el 31). No crea ni mueve dinero: ambos ya se contaron en sus días, así que
+ * se permite aunque esos días tengan Cierre (solo un mes cerrado lo bloquea). Mismas reglas que
+ * `pairWith`: signo opuesto, mismo importe total, sin pareja previa.
+ */
+export async function pairExisting(id: string, withId: string) {
+  return moneyTransaction(async () => {
+  if (!withId || typeof withId !== "string") throw badRequest("Indica el movimiento contraparte.");
+  if (id === withId) throw badRequest("Un movimiento no puede ser su propia contraparte.");
+  const a = await pairableGroup(id, "El movimiento");
+  const b = await pairableGroup(withId, "La contraparte");
+  if (a.row.type === b.row.type) throw badRequest("La contraparte debe ser del signo opuesto (ingreso ↔ salida).");
+  if (a.total !== b.total) throw badRequest(`La contraparte debe ser por el mismo importe (${a.total} ≠ ${b.total}). Las contrapartes parciales no están definidas.`);
+  // Igual que registrar el retorno con `pairWith`: el original puede ser de un mes ya cerrado (PAIR08),
+  // pero el retorno (el más reciente de los dos) debe estar en el período abierto.
+  await assertReconcilable(a.row.date > b.row.date ? a.row.date : b.row.date, "Enlazar la contraparte");
+  const pairId = newPairId();
+  await prisma.bankTransaction.updateMany({ where: { id: { in: [...a.group, ...b.group].map(r => r.id) } }, data: { pairId } });
+  return { pairId };
+  });
+}
+
+/** Movimientos ya registrados que pueden ser la contraparte de `id` (signo opuesto, mismo total, mes abierto). */
+export async function pairCandidates(id: string) {
+  const a = await pairableGroup(id, "El movimiento");
+  const lastClose = await prisma.monthlyClose.findFirst({ where: { branchId: null }, orderBy: { closedAt: "desc" }, select: { closedAt: true } });
+  const rows = await prisma.bankTransaction.findMany({
+    where: {
+      type: a.row.type === "ingreso" ? "egreso" : "ingreso",
+      pairId: null, noCounterpart: false, debtApplied: 0, hourlyShiftId: null, driverId: null,
+      ...(lastClose ? { date: { gt: lastClose.closedAt } } : {}),
+    },
+    orderBy: { date: "desc" },
+    take: 500,
+  });
+  const groups = new Map<string, typeof rows>();
+  for (const r of rows) groups.set(r.groupId ?? r.id, [...(groups.get(r.groupId ?? r.id) ?? []), r]);
+  return [...groups.values()]
+    .map(g => ({ id: g[0].id, type: g[0].type, date: g[0].date, description: g[0].description, medium: g.length > 1 ? "mixed" : g[0].medium, amount: g.reduce((t, r) => t + r.amount, 0) }))
+    .filter(c => c.amount === a.total);
 }
 
 export async function create(data: {
@@ -101,7 +173,7 @@ export async function create(data: {
     const originalDay = toBogotaDateStr(original.date);
     when = (await isOpenPeriod(originalDay, original.date)) ? original.date : op.at;
     await assertOpenInstant(when);
-    pairId = `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    pairId = newPairId();
     await prisma.bankTransaction.updateMany({ where: { id: { in: group.map(r => r.id) } }, data: { pairId } });
   }
 

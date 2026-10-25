@@ -37,6 +37,12 @@ function splitParts(type: "ingreso" | "egreso", cash: number, bank: number, tota
   return undefined;
 }
 
+function groupBy<T>(rows: T[], key: (r: T) => string | null | undefined): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const r of rows) { const k = key(r); if (k) map.set(k, [...(map.get(k) ?? []), r]); }
+  return map;
+}
+
 function iso(d: Date): string { return toBogotaDateStr(d); }
 // HH:MM en formato 24h (zona Bogotá), para ordenar correctamente como string
 function hm(d: Date): string {
@@ -134,7 +140,13 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
   }
 
   // --- Banco ---
+  // Un abono de cliente por hora repartido en varios turnos (paymentGroupId) se muestra como UNA
+  // fila por el valor cobrado; eliminarla revierte el abono completo (deleteHourlyBankTx).
+  const bankGroups = groupBy(bankTxs, t => t.paymentGroupId);
   for (const t of bankTxs) {
+    const group = t.paymentGroupId ? bankGroups.get(t.paymentGroupId)! : [t];
+    if (group[0] !== t) continue;
+    const many = group.length > 1;
     result.push({
       id: `bank-${t.id}`,
       date: iso(t.date),
@@ -142,8 +154,8 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       _sortKey: t.createdAt.toISOString(),
       type: t.type,
       medium: t.medium,
-      amount: t.amount,
-      description: t.description,
+      amount: group.reduce((s, r) => s + r.amount, 0),
+      description: many ? `${t.description.replace("Cobro cliente por hora", "Abono cliente por hora")} (repartido en ${group.length} turnos)` : t.description,
       category: t.type === "ingreso" ? "Ingreso banco" : "Salida banco",
       source: "Banco",
       relatedName: t.driverName ?? t.reference ?? undefined,
@@ -151,7 +163,7 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
       deviceName: t.deviceName,
       entityType: "BankTransaction",
       entityId: t.id,
-      editableDescription: true,
+      editableDescription: !many,
     });
   }
 
@@ -255,18 +267,25 @@ export async function getUnifiedMovements(params?: { from?: string; to?: string;
   }
 
   // --- Cobros de deudas de clientes (total o parcial) ---
+  // Un abono repartido en varias deudas (y medios) es UNA fila por el valor cobrado.
+  const payGroups = groupBy(clientDebtsPaid, d => d.paymentGroupId);
   for (const d of clientDebtsPaid) {
     if (!d.paidAt) continue;
+    const group = d.paymentGroupId ? payGroups.get(d.paymentGroupId)! : [d];
+    if (group[0] !== d) continue;
+    const cash = group.reduce((s, r) => s + r.paidCash, 0), bank = group.reduce((s, r) => s + r.paidBank, 0);
+    const total = group.reduce((s, r) => s + r.paidAmount, 0);
+    const debts = new Set(group.map(r => r.debtId)).size;
     result.push({
       id: `cdebt-${d.id}`,
       date: iso(d.paidAt),
       time: hm(d.paidAt),
       _sortKey: d.paidAt.toISOString(),
       type: "ingreso",
-      medium: d.paidBank > 0 && d.paidCash === 0 ? "bank" : "cash",
-      amount: d.paidAmount,
-      parts: splitParts("ingreso", d.paidCash, d.paidBank, d.paidAmount),
-      description: `Cobro deuda: ${d.description} — ${d.client?.name ?? "cliente"}`,
+      medium: bank > 0 && cash === 0 ? "bank" : "cash",
+      amount: total,
+      parts: splitParts("ingreso", cash, bank, total),
+      description: debts > 1 ? `Abono — ${d.client?.name ?? "cliente"} (repartido en ${debts} deudas)` : `Cobro deuda: ${d.description} — ${d.client?.name ?? "cliente"}`,
       category: "Cobro cliente",
       source: "Clientes",
       relatedName: d.client?.name,

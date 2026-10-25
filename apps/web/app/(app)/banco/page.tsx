@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Trash2, TrendingUp, TrendingDown, CheckCircle2, CreditCard } from "lucide-react";
+import { Plus, Trash2, TrendingUp, TrendingDown, CheckCircle2, CreditCard, Link2 } from "lucide-react";
 import { toast } from "sonner";
 import * as api from "@/lib/sd-api";
 import type { UnifiedBankMovement, Driver } from "@/lib/sd-api";
@@ -67,12 +67,21 @@ function buildRows(movs: UnifiedBankMovement[]): BankRow[] {
   });
 }
 
+// Conciliación (25-oct-2026): un movimiento queda CONSOLIDADO (verde, sin pendientes) si se aplicó
+// a un domiciliario, se marcó sin contraparte, es de un cliente por hora (cobro o pago de turno,
+// ya cuadrado con su turno) o tiene su contraparte, aunque esta esté en otro día. Solo un
+// ingreso/salida sin nada de eso queda pendiente (rojo).
+function isConsolidated(m: UnifiedBankMovement) {
+  return !!m.driverName || m.noCounterpart === true || !!m.hourlyShiftId || (!!m.pairId && !!m.pairPartner);
+}
+
 export default function BancoPage() {
   const [movements, setMovements] = useState<UnifiedBankMovement[]>([]);
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [prefill, setPrefill] = useState<{ type: "ingreso" | "egreso"; amount: number; pairWith?: string } | undefined>();
   const [applyModal, setApplyModal] = useState<{ mov: UnifiedBankMovement } | null>(null);
+  const [pairModal, setPairModal] = useState<UnifiedBankMovement | null>(null);
   const [deleteReq, setDeleteReq] = useState<UnifiedBankMovement | null>(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -103,9 +112,8 @@ export default function BancoPage() {
   const ingresos = movements.filter(m => m.type === "ingreso").reduce((s, m) => s + m.amount, 0) + conversiones;
   const egresos  = movements.filter(m => m.type === "egreso").reduce((s, m) => s + m.amount, 0) + conversiones;
   const balance  = ingresos - egresos;
-  // Movimiento asignado a domiciliario = ya tiene contraparte implícita, no cuenta como pendiente.
-  // Movimiento marcado explícitamente "sin contraparte" tampoco cuenta como pendiente (#11).
-  const sinContraparte = rows.filter(r => r.kind === "single" && (r.mov.type === "ingreso" || r.mov.type === "egreso") && !r.mov.driverName && !r.mov.noCounterpart).length;
+  // Pendientes = ingresos/salidas sueltos que no están consolidados (ver isConsolidated).
+  const sinContraparte = rows.filter(r => r.kind === "single" && (r.mov.type === "ingreso" || r.mov.type === "egreso") && !isConsolidated(r.mov)).length;
 
   // Registrar la contraparte: prefija tipo y monto, ENLAZA por pairWith. No copia descripción.
   function registrarContraria(m: UnifiedBankMovement) {
@@ -211,11 +219,16 @@ export default function BancoPage() {
             const Icon = cfg.icon;
             const isMixed = m.cashPart != null;
             const isPositive = m.type === "ingreso" || m.type === "consignacion";
-            // Rojo solo si no tiene contraparte NI domiciliario asignado NI está marcado
-            // explícitamente como "sin contraparte" (#11). Con cualquiera de esos = cerrado.
+            // Rojo solo si el movimiento no está consolidado (isConsolidated).
             const hasDriver = !!m.driverName;
-            const closed = hasDriver || m.noCounterpart === true;
+            const isHourly = !!m.hourlyShiftId;
+            const partner = m.pairId ? m.pairPartner : undefined;
+            const closed = isConsolidated(m);
             const red = (m.type === "ingreso" || m.type === "egreso") && !closed;
+            // Botón amarillo: todo INGRESO del banco que aún no se aplicó a un domiciliario ni tiene
+            // contraparte, aunque esté marcado "sin contraparte". Nunca en movimientos de clientes
+            // (cobros/pagos por hora): ya están consolidados con su turno.
+            const canDiscount = m.source === "bank" && m.type === "ingreso" && !hasDriver && !isHourly && !m.pairId && !isMixed;
             const cardClass = red
               ? "border-2 border-red-500 bg-red-500/10"
               : closed
@@ -244,8 +257,14 @@ export default function BancoPage() {
                           </span>
                         )}
                         {hasDriver && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-400">↩️ Deuda de {m.driverName}</span>}
-                        {!hasDriver && m.noCounterpart && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-green-500/20 text-green-700 dark:text-green-400">✓ No necesita contraparte</span>}
-                        {!hasDriver && !m.noCounterpart && !m.pairId && (m.type === "ingreso" || m.type === "egreso") && (
+                        {isHourly && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-green-500/20 text-green-700 dark:text-green-400">⏱️ Cliente por hora · consolidado</span>}
+                        {!hasDriver && !isHourly && m.noCounterpart && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-green-500/20 text-green-700 dark:text-green-400">✓ No necesita contraparte</span>}
+                        {partner && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-green-500/20 text-green-700 dark:text-green-400">
+                            ⇄ Cuadrado con {partner.type === "ingreso" ? "el ingreso" : "la salida"} del {fmtDate(partner.date)}
+                          </span>
+                        )}
+                        {red && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-red-500/20 text-red-700 dark:text-red-400">⚠️ Falta contraparte</span>
                         )}
                       </div>
@@ -260,6 +279,11 @@ export default function BancoPage() {
                         {m.deviceName ? ` · 🖥️ ${m.deviceName}` : ""}
                         {m.reference ? ` · Ref: ${m.reference}` : ""}{m.branchName ? ` · ${m.branchName}` : ""}
                       </p>
+                      {partner && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          ⇄ Contraparte: {partner.description} · {partner.type === "ingreso" ? "+" : "−"}{formatCOP(partner.amount)}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
@@ -272,15 +296,28 @@ export default function BancoPage() {
                   </div>
                 </div>
 
-                {(!hasDriver) && (
-                  <div className="mt-3 flex gap-2">
+                {/* Pendiente (rojo): cuadrarlo registrando la contraparte, enlazando una ya
+                    registrada (de cualquier día del mes abierto) o, si es un ingreso,
+                    descontándolo de una deuda. Funciona aunque el día ya tenga Cierre: no
+                    mueve dinero ya contado (el backend lo garantiza). */}
+                {(red || canDiscount) && (
+                  <div className="mt-3 flex gap-2 flex-wrap">
                     {red && (
+                    <button
+                      onClick={() => registrarContraria(m)}
+                      className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-500 text-white text-sm font-bold hover:bg-red-600 transition"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Registrar {m.type === "ingreso" ? "Salida" : "Ingreso"} de {formatCOP(m.amount)} para cuadrar
+                    </button>
+                    )}
+                    {red && m.source === "bank" && (
                       <button
-                        onClick={() => registrarContraria(m)}
-                        className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-500 text-white text-sm font-bold hover:bg-red-600 transition"
+                        onClick={() => setPairModal(m)}
+                        className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-secondary text-foreground text-sm font-bold hover:bg-secondary/70 transition border border-border"
                       >
-                        <Plus className="h-3.5 w-3.5" />
-                        Registrar {m.type === "ingreso" ? "Salida" : "Ingreso"} de {formatCOP(m.amount)} para cuadrar
+                        <Link2 className="h-3.5 w-3.5" />
+                        Enlazar con uno ya registrado
                       </button>
                     )}
                     {/* Solo un INGRESO SIN CONTRAPARTE puede descontarse de una deuda.
@@ -289,7 +326,7 @@ export default function BancoPage() {
                         domiciliario. Mostrarlo en esos casos ya causó un error real:
                         se aplicó una salida de $100.000 a la deuda de una domiciliaria.
                         El backend (applyBankToDriver) rechaza ambos casos igual. */}
-                    {m.source === "bank" && m.type === "ingreso" && !m.pairId && (
+                    {canDiscount && (
                       <button
                         onClick={() => setApplyModal({ mov: m })}
                         className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-500/20 text-amber-700 dark:text-amber-400 text-sm font-bold hover:bg-amber-500/30 transition border border-amber-500/30"
@@ -316,8 +353,17 @@ export default function BancoPage() {
       {applyModal && (
         <ApplyToDriverModal
           mov={applyModal.mov}
+          pastDay={!isToday}
           onClose={() => setApplyModal(null)}
           onDone={() => { setApplyModal(null); load(); }}
+        />
+      )}
+
+      {pairModal && (
+        <PairExistingModal
+          mov={pairModal}
+          onClose={() => setPairModal(null)}
+          onDone={() => { setPairModal(null); load(); }}
         />
       )}
 
@@ -372,7 +418,72 @@ function SummaryCard({ label, value, color }: { label: string; value: string; co
   );
 }
 
-function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement; onClose: () => void; onDone: () => void }) {
+// Enlaza como contraparte un movimiento YA registrado (de cualquier día del mes abierto).
+// No crea dinero: ambos ya se contaron en sus días.
+function PairExistingModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement; onClose: () => void; onDone: () => void }) {
+  const [candidates, setCandidates] = useState<api.PairCandidate[] | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.getPairCandidates(mov.id).then(setCandidates).catch(e => { toast.error(String(e)); setCandidates([]); });
+  }, [mov.id]);
+
+  async function link(c: api.PairCandidate) {
+    setSaving(c.id);
+    try {
+      await api.pairBankTransactions(mov.id, c.id);
+      toast.success("Contraparte enlazada: el movimiento quedó cuadrado");
+      onDone();
+    } catch (e) { toast.error(String(e)); }
+    setSaving(null);
+  }
+
+  const wanted = mov.type === "ingreso" ? "una salida" : "un ingreso";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="glass-strong rounded-3xl max-h-[92vh] overflow-y-auto p-6 w-full max-w-md space-y-4 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-black text-lg">Enlazar contraparte</h2>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-secondary transition text-muted-foreground">✕</button>
+        </div>
+        <div className="bg-secondary/50 rounded-xl p-3">
+          <p className="text-sm font-bold">{mov.description}</p>
+          <p className="text-xs text-muted-foreground">{fmtDate(mov.date)} · {mov.type === "ingreso" ? "+" : "−"}{formatCOP(mov.amount)}</p>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Elige {wanted} de {formatCOP(mov.amount)} que ya esté registrada (puede ser de otro día). Solo se enlazan: no se crea ni se mueve dinero, y los Cierres ya hechos no cambian.
+        </p>
+        {candidates === null ? (
+          <p className="text-sm text-center text-muted-foreground py-4">Buscando…</p>
+        ) : candidates.length === 0 ? (
+          <p className="text-sm text-center text-muted-foreground py-4">
+            No hay {wanted} pendiente de {formatCOP(mov.amount)}. Si aún no se registró, usa «Registrar … para cuadrar».
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {candidates.map(c => (
+              <button
+                key={c.id}
+                onClick={() => link(c)}
+                disabled={!!saving}
+                className="w-full text-left rounded-xl border border-border p-3 hover:bg-secondary transition disabled:opacity-50"
+              >
+                <p className="text-sm font-bold">{c.description}</p>
+                <p className="text-xs text-muted-foreground">
+                  {fmtDate(c.date)} · {c.medium === "cash" ? "💵 Efectivo" : c.medium === "mixed" ? "💵+🏦 Mixto" : "🏦 Transferencia"} · {c.type === "ingreso" ? "+" : "−"}{formatCOP(c.amount)}
+                  {saving === c.id ? " · Enlazando…" : ""}
+                </p>
+              </button>
+            ))}
+          </div>
+        )}
+        <button onClick={onClose} className="w-full py-2.5 rounded-xl border border-border text-sm font-bold hover:bg-secondary transition">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function ApplyToDriverModal({ mov, pastDay, onClose, onDone }: { mov: UnifiedBankMovement; pastDay?: boolean; onClose: () => void; onDone: () => void }) {
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [driverId, setDriverId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -410,6 +521,12 @@ function ApplyToDriverModal({ mov, onClose, onDone }: { mov: UnifiedBankMovement
           <p className="text-2xl font-black tnum mt-1">{formatCOP(mov.amount)}</p>
           <p className="text-xs text-muted-foreground">{mov.medium === "cash" ? "💵 Efectivo" : "🏦 Transferencia"}</p>
         </div>
+
+        {pastDay && (
+          <p className="text-xs text-muted-foreground rounded-xl bg-secondary/50 p-3">
+            Este ingreso ya se contó el {fmtDate(mov.date)}. Descontarlo <strong className="text-foreground">no cambia la caja ni el banco</strong> de ningún día (ni el Cierre ya hecho): solo baja la deuda del domiciliario, con fecha de hoy.
+          </p>
+        )}
 
         {!result ? (
           <>

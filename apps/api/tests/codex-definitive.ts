@@ -215,7 +215,9 @@ async function main() {
       const s = await hourly.registerShift(hc.id, shiftInput()); await clients.addDebt(client.id, "Deuda", 10000);
       await clients.registerClientPayment(client.id, 1000, false, "bank"); const pay = await p.clientDebtPayment.findFirstOrThrow();
       const close = await closeDay();
-      for (const operation of [() => bank.remove((b as any).id), () => bank.edit((b as any).id, { amount: 20000 }), () => bases.removeBase(base.id), () => bases.editBase(base.id, { cashAmount: 20000 }), () => conversions.deleteConversion(conv.id), () => hourly.deleteShift(s.id), () => hourly.editShift(s.id, { endTime: "10:00" }), () => clients.reverseClientPayment(pay.id), () => shifts.deleteShift(close.id), () => drivers.applyBankToDriver((b as any).id, driver.id)]) {
+      for (const operation of [() => bank.remove((b as any).id), () => bank.edit((b as any).id, { amount: 20000 }), () => bases.removeBase(base.id), () => bases.editBase(base.id, { cashAmount: 20000 }), () => conversions.deleteConversion(conv.id), () => hourly.deleteShift(s.id), () => hourly.editShift(s.id, { endTime: "10:00" }), () => clients.reverseClientPayment(pay.id), () => shifts.deleteShift(close.id)]) {
+        // Descontar de deuda un ingreso de un día cerrado YA NO se bloquea (decisión del dueño,
+        // 25-oct-2026: no mueve dinero ya contado; regresión CONC-DEUDA en claude-f14-d7.ts).
         await assert.rejects(operation, code(409));
       }
       assert.equal((await p.bankTransaction.findUniqueOrThrow({ where: { id: (b as any).id } })).amount, 10000);

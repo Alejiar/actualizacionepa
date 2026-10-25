@@ -163,6 +163,9 @@ export async function registerClientPayment(
   const paidAtAll = await moneyNow(); // NEW02: el dinero cuenta en el día operativo (caja abierta), no según el reloj.
   if (applied <= 0) throw badRequest("El cliente no tiene deuda pendiente");
   let left = applied, cashPool = split ? cashIn : (medium === "cash" ? applied : 0);
+  // Las filas de este abono (una por deuda y medio) comparten un id: Movimientos lo muestra como UN
+  // abono por el valor cobrado y revertirlo revierte el abono completo.
+  const paymentGroupId = `abono_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   for (const debt of debts) {
     if (!left) break;
     const part = Math.min(left, debt.amount - (debt.paidAmount ?? 0));
@@ -172,7 +175,7 @@ export async function registerClientPayment(
     for (const [paidCash,paidBank] of [[cash,0],[0,bank]]) {
       if (!paidCash && !paidBank) continue;
       await prisma.clientDebtPayment.create({data:{
-        debtId:debt.id,clientId,description:debt.description,paidAmount:paidCash+paidBank,paidCash,paidBank,paidAt,
+        debtId:debt.id,clientId,description:debt.description,paidAmount:paidCash+paidBank,paidCash,paidBank,paidAt,paymentGroupId,
         paidBy:opts?.actor?.id ?? null,paidByName:opts?.actor?.name ?? null,
         paidDeviceId:opts?.actor?.deviceId ?? null,paidDeviceName:opts?.actor?.deviceName ?? null,
       }});
@@ -206,17 +209,23 @@ export async function deleteClient(id: string) {
 
 export async function reverseClientPayment(id: string) {
   return moneyTransaction(async () => {
-  const payment = await prisma.clientDebtPayment.findUnique({where:{id}});
-  if (!payment) throw badRequest("El abono ya no existe. Actualiza Movimientos.");
-  await assertOpenInstant(payment.paidAt, "La reversión del abono");
-  const debt = await prisma.clientDebt.findUniqueOrThrow({where:{id:payment.debtId}});
-  await prisma.clientDebtPayment.delete({where:{id}});
-  const latest = await prisma.clientDebtPayment.findFirst({where:{debtId:debt.id},orderBy:{paidAt:"desc"}});
-  const paid = Math.max(0,(debt.paidAmount ?? 0)-payment.paidAmount);
-  await prisma.clientDebt.update({where:{id:debt.id},data:{paidAmount:paid,paid:paid>=debt.amount,
-    paidCash:{decrement:payment.paidCash},paidBank:{decrement:payment.paidBank},paidAt:latest?.paidAt ?? null,
-    paidBy:latest?.paidBy ?? null,paidByName:latest?.paidByName ?? null,paidDeviceId:latest?.paidDeviceId ?? null,paidDeviceName:latest?.paidDeviceName ?? null}});
-  await prisma.client.update({where:{id:debt.clientId},data:{pendingDebt:{increment:payment.paidAmount}}});
+  const first = await prisma.clientDebtPayment.findUnique({where:{id}});
+  if (!first) throw badRequest("El abono ya no existe. Actualiza Movimientos.");
+  // Un abono repartido en varias deudas se revierte COMPLETO (todas sus filas).
+  const payments = first.paymentGroupId
+    ? await prisma.clientDebtPayment.findMany({where:{paymentGroupId:first.paymentGroupId}})
+    : [first];
+  for (const payment of payments) await assertOpenInstant(payment.paidAt, "La reversión del abono");
+  for (const payment of payments) {
+    const debt = await prisma.clientDebt.findUniqueOrThrow({where:{id:payment.debtId}});
+    await prisma.clientDebtPayment.delete({where:{id:payment.id}});
+    const latest = await prisma.clientDebtPayment.findFirst({where:{debtId:debt.id},orderBy:{paidAt:"desc"}});
+    const paid = Math.max(0,(debt.paidAmount ?? 0)-payment.paidAmount);
+    await prisma.clientDebt.update({where:{id:debt.id},data:{paidAmount:paid,paid:paid>=debt.amount,
+      paidCash:{decrement:payment.paidCash},paidBank:{decrement:payment.paidBank},paidAt:latest?.paidAt ?? null,
+      paidBy:latest?.paidBy ?? null,paidByName:latest?.paidByName ?? null,paidDeviceId:latest?.paidDeviceId ?? null,paidDeviceName:latest?.paidDeviceName ?? null}});
+    await prisma.client.update({where:{id:debt.clientId},data:{pendingDebt:{increment:payment.paidAmount}}});
+  }
 
   });
 }

@@ -153,6 +153,13 @@ export const applyBankToDriver = (bankTxId: string, driverId: string, baseAmount
     `/bank-transactions/${bankTxId}/apply-to-driver`,
     { method: "POST", body: JSON.stringify({ driverId, baseAmount }) }
   );
+
+/** Movimiento ya registrado que puede ser la contraparte de otro (signo opuesto, mismo total). */
+export interface PairCandidate { id: string; type: "ingreso" | "egreso"; date: string; description: string; medium: "cash" | "bank" | "mixed"; amount: number }
+export const getPairCandidates = (bankTxId: string) =>
+  apiFetch<PairCandidate[]>(`/bank-transactions/${bankTxId}/pair-candidates`);
+export const pairBankTransactions = (bankTxId: string, withId: string) =>
+  apiFetch<{ pairId: string }>(`/bank-transactions/${bankTxId}/pair`, { method: "POST", body: JSON.stringify({ withId }) });
 export const getOrdersByBranch = (branchId: string, from?: string, to?: string) => {
   const q = new URLSearchParams(Object.entries({ from, to }).filter(([, v]) => v) as [string, string][]);
   return apiFetch<Order[]>(`/sd/dashboard/orders/${branchId}${q.toString() ? "?" + q : ""}`);
@@ -244,6 +251,8 @@ export interface UnifiedBankMovement {
   groupId?: string | null;
   pairId?: string | null;
   noCounterpart?: boolean;
+  hourlyShiftId?: string | null;
+  pairPartner?: PairPartner;
   // Para movimientos mixtos consolidados:
   cashPart?: number;
   bankPart?: number;
@@ -258,10 +267,27 @@ export async function getUnifiedBankMovements(params?: { from?: string; to?: str
     apiFetch<Conversion[]>(`/sd/conversions${q.toString() ? "?" + q : ""}`),
   ]);
 
+  // Un abono de cliente por hora se guarda repartido en una fila por turno (paymentGroupId): se
+  // muestra como UN movimiento por el valor cobrado. Eliminarlo (su primera fila) revierte el abono
+  // completo en el backend.
+  const payGroups = new Map<string, BankTransaction[]>();
+  const rows: BankTransaction[] = [];
+  for (const t of txs) {
+    if (t.paymentGroupId) payGroups.set(t.paymentGroupId, [...(payGroups.get(t.paymentGroupId) ?? []), t]);
+    else rows.push(t);
+  }
+  for (const [, g] of payGroups) {
+    rows.push(g.length === 1 ? g[0] : {
+      ...g[0],
+      amount: g.reduce((s, t) => s + t.amount, 0),
+      description: `${g[0].description.replace("Cobro cliente por hora", "Abono cliente por hora")} (repartido en ${g.length} turnos)`,
+    });
+  }
+
   // Consolidar mixtos: dos filas con el mismo groupId = UN movimiento (efectivo+transferencia).
   const mixedGroups = new Map<string, BankTransaction[]>();
   const singles: BankTransaction[] = [];
-  for (const t of txs) {
+  for (const t of rows) {
     if (t.groupId) {
       const g = mixedGroups.get(t.groupId) ?? [];
       g.push(t);
@@ -283,6 +309,8 @@ export async function getUnifiedBankMovements(params?: { from?: string; to?: str
     deviceName: t.deviceName,
     pairId: t.pairId,
     noCounterpart: t.noCounterpart,
+    hourlyShiftId: t.hourlyShiftId,
+    pairPartner: t.pairPartner,
     date: t.date,
     source: "bank" as const,
   }));
@@ -292,7 +320,7 @@ export async function getUnifiedBankMovements(params?: { from?: string; to?: str
     if (parts.length === 1) {
       // Mitad huérfana (no debería pasar): tratarla como simple.
       const t = parts[0];
-      fromTxs.push({ id: t.id, type: t.type as BankMovementType, medium: t.medium ?? "bank", amount: t.amount, description: t.description, reference: t.reference, driverName: t.driverName, createdByName: t.createdByName, deviceName: t.deviceName, groupId, pairId: t.pairId, noCounterpart: t.noCounterpart, date: t.date, source: "bank" });
+      fromTxs.push({ id: t.id, type: t.type as BankMovementType, medium: t.medium ?? "bank", amount: t.amount, description: t.description, reference: t.reference, driverName: t.driverName, createdByName: t.createdByName, deviceName: t.deviceName, groupId, pairId: t.pairId, noCounterpart: t.noCounterpart, hourlyShiftId: t.hourlyShiftId, pairPartner: t.pairPartner, date: t.date, source: "bank" });
       continue;
     }
     const cashPart = parts.find(p => p.medium === "cash")?.amount ?? 0;
@@ -310,6 +338,8 @@ export async function getUnifiedBankMovements(params?: { from?: string; to?: str
       groupId,
       pairId: head.pairId,
       noCounterpart: head.noCounterpart,
+      hourlyShiftId: head.hourlyShiftId,
+      pairPartner: head.pairPartner,
       cashPart,
       bankPart,
       date: head.date,
@@ -850,9 +880,17 @@ export interface BankTransaction {
   groupId?: string | null;
   pairId?: string | null;
   noCounterpart?: boolean;
+  /** Turno por hora que originó el movimiento (cobro al cliente o pago al domiciliario). */
+  hourlyShiftId?: string | null;
+  /** Filas de un mismo abono repartido entre turnos. */
+  paymentGroupId?: string | null;
+  /** Mitad contraria del par cuando está en otro día (el backend la adjunta). */
+  pairPartner?: PairPartner;
   date: string;
   createdAt: string;
 }
+
+export interface PairPartner { type: "ingreso" | "egreso"; date: string; description: string; amount: number }
 
 // ─── Reporte mensual ──────────────────────────────────────────────────────────
 export interface MonthlyReport {

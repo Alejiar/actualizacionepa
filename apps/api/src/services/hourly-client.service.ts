@@ -407,6 +407,10 @@ export async function payClient(
   const available = shifts.reduce((sum, s) => sum + Math.max(0, s.totalAmount - s.paidAmount), 0);
   if (available !== totalPending) throw badRequest("El saldo histórico por hora necesita conciliación antes de registrar el cobro.");
 
+  // Todas las filas de este abono comparten un id: Banco y Movimientos lo muestran como UN abono por
+  // el valor cobrado (antes salían los pedazos por turno, p. ej. 59.664 + 27.336 por un abono de
+  // 87.000) y eliminarlo revierte el abono completo.
+  const paymentGroupId = `abono_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   return prisma.$transaction(async (tx) => {
     let left = applied;
     for (const s of shifts) {
@@ -425,6 +429,7 @@ export async function payClient(
           amount: apply,
           description: `Cobro cliente por hora — ${client.name}`,
           hourlyShiftId: s.id,
+          paymentGroupId,
           noCounterpart: true,
           createdBy: input.actor?.id ?? null,
           createdByName: input.actor?.name ?? null,
@@ -615,32 +620,41 @@ export async function deleteHourlyBankTx(bankTxId: string): Promise<boolean> {
   if (!tx || !tx.hourlyShiftId) return false;
   await assertOpenInstant(tx.date, "La reversión del turno");
 
-  const shift = await prisma.hourlyShift.findUnique({ where: { id: tx.hourlyShiftId } });
-  if (!shift) {
-    await prisma.bankTransaction.deleteMany({ where: { id: bankTxId } });
+  if (tx.type === "egreso") {
+    const shift = await prisma.hourlyShift.findUnique({ where: { id: tx.hourlyShiftId } });
+    if (!shift) {
+      await prisma.bankTransaction.deleteMany({ where: { id: bankTxId } });
+      return true;
+    }
+    // Pago al domiciliario → el turno completo se va (cascada a sus movimientos + deuda).
+    await deleteShift(shift.id);
     return true;
   }
 
-  if (tx.type === "egreso") {
-    // Pago al domiciliario → el turno completo se va (cascada a sus movimientos + deuda).
-    await deleteShift(shift.id);
-  } else {
-    // Cobro del cliente → revertir SOLO ese cobro: la deuda del cliente vuelve a subir.
-    await prisma.$transaction(async (txx) => {
-      await txx.bankTransaction.deleteMany({ where: { id: bankTxId } });
-      const newPaid = Math.max(0, shift.paidAmount - tx.amount);
-      const newCash = tx.medium === "cash" ? Math.max(0, shift.paidCash - tx.amount) : shift.paidCash;
-      const newBank = tx.medium === "bank" ? Math.max(0, shift.paidBank - tx.amount) : shift.paidBank;
+  // Cobro del cliente → revertir ese ABONO completo (todas sus filas por turno, si se repartió):
+  // la deuda del cliente vuelve a subir por lo que se había cobrado.
+  const rows = tx.paymentGroupId
+    ? await prisma.bankTransaction.findMany({ where: { paymentGroupId: tx.paymentGroupId, type: "ingreso", hourlyShiftId: { not: null } } })
+    : [tx];
+  for (const row of rows) await assertOpenInstant(row.date, "La reversión del cobro");
+  await prisma.$transaction(async (txx) => {
+    for (const row of rows) {
+      await txx.bankTransaction.deleteMany({ where: { id: row.id } });
+      const shift = await txx.hourlyShift.findUnique({ where: { id: row.hourlyShiftId! } });
+      if (!shift) continue;
+      const newPaid = Math.max(0, shift.paidAmount - row.amount);
+      const newCash = row.medium === "cash" ? Math.max(0, shift.paidCash - row.amount) : shift.paidCash;
+      const newBank = row.medium === "bank" ? Math.max(0, shift.paidBank - row.amount) : shift.paidBank;
       await txx.hourlyShift.update({
         where: { id: shift.id },
         data: { paidAmount: newPaid, paid: false, paidCash: newCash, paidBank: newBank },
       });
       await txx.hourlyClient.update({
         where: { id: shift.hourlyClientId },
-        data: { pendingDebt: { increment: tx.amount } },
+        data: { pendingDebt: { increment: row.amount } },
       });
-    });
-  }
+    }
+  });
   return true;
 
   });

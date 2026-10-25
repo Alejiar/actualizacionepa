@@ -530,6 +530,9 @@ model BankTransaction {
   // bancaria de un turno de una sola vez al eliminarlo, sin dejar cobros colgados ni
   // egresos de compensación. Nulo en todo movimiento que no venga de "Clientes por hora".
   hourlyShiftId String?
+  // Un abono de cliente por hora se reparte (FIFO) en una fila por turno; todas comparten este id
+  // para mostrarse y revertirse como UN solo abono, por el valor que se cobró (25-oct-2026).
+  paymentGroupId String?
   createdBy     String?
   createdByName String?
   deviceId      String? // PC (Device.id) que registró el movimiento
@@ -546,6 +549,7 @@ model BankTransaction {
   @@index([groupId])
   @@index([pairId])
   @@index([hourlyShiftId])
+  @@index([paymentGroupId])
 }
 
 model ShiftClose {
@@ -739,12 +743,16 @@ model ClientDebtPayment {
   paidDeviceId    String?
   paidDeviceName  String?
   legacyAggregate Boolean    @default(false)
+  // Un abono se reparte (FIFO) en una fila por deuda (y por medio); todas comparten este id para
+  // mostrarse y revertirse como UN solo abono (25-oct-2026).
+  paymentGroupId  String?
   debt            ClientDebt @relation(fields: [debtId], references: [id], onDelete: Restrict)
   client          Client     @relation(fields: [clientId], references: [id], onDelete: Restrict)
 
   @@index([debtId])
   @@index([clientId])
   @@index([paidAt])
+  @@index([paymentGroupId])
 }
 
 /// Auditoría de la migración F14 (14-oct-2026): separación de la base (libro BaseTransaction)

@@ -216,9 +216,9 @@ async function main() {
       for (const m of movs) for (const pt of m.parts ?? [{ type: m.type, medium: m.medium, amount: m.amount }]) net[pt.medium as "cash" | "bank"] += pt.type === "ingreso" ? pt.amount : -pt.amount;
       f.net = net; f.parts = movs.filter(m => m.parts).map(m => [m.source, m.parts]);
       assert.deepEqual(net, { cash: exp.cash - 100000, bank: exp.bank - 100000 });
-      // El cobro dividido ya se guarda como un ClientDebtPayment por medio; la base mixta y la
-      // conversión son un solo registro con dos medios y por eso llevan desglose.
-      assert.deepEqual(f.parts.map((x: any) => x[0]).sort(), ["Bases", "Conversión"]);
+      // El cobro dividido se guarda como un ClientDebtPayment por medio, pero desde el 25-oct-2026 se
+      // muestra como UN abono (paymentGroupId) con desglose, igual que la base mixta y la conversión.
+      assert.deepEqual(f.parts.map((x: any) => x[0]).sort(), ["Bases", "Clientes", "Conversión"]);
     });
     await check("USR-ADMIN", "Nunca queda el sistema sin un administrador activo (desactivar, quitar rol, eliminar)", async f => {
       const r1 = await api(`/users/${admin.id}`, "PATCH", { active: false }, admin);
@@ -300,6 +300,132 @@ async function main() {
       assert.deepEqual([(f.corr as any)[0].cashDelta, (f.corr as any)[0].bankDelta], [0, -5000]);
       assert.deepEqual(await bal(), { cash: before.cash, bank: before.bank - 5000 });
       assert.equal(await p.bankTransaction.count(), 0);
+    });
+    // ── Conciliación (25-oct-2026): descontar de deuda y cuadrar contraparte aunque el día tenga
+    // Cierre, sin mover dinero ya contado. Valores esperados calculados aquí a mano.
+    await check("CONC-DEUDA", "Descontar de deuda un ingreso de un día cerrado: baja la deuda y no mueve caja ni banco", async f => {
+      await order(A, 30000); const debt0 = (await drv(A)).pendingDebt; f.debt0 = debt0;
+      assert.equal(debt0, 9000, "comisión del 30 % de 30.000");
+      await ok("/bank-transactions", "POST", { type: "ingreso", medium: "bank", amount: 9000, description: "Transferencia de Domi A", date: yesterday, noCounterpart: true }, admin);
+      const tx = await p.bankTransaction.findFirstOrThrow(); await closeDay(yesterday);
+      const before = await bal(), sy0 = await days.getDaySummary(yesterday);
+      const r = await ok(`/bank-transactions/${tx.id}/apply-to-driver`, "POST", { driverId: A.id }, oper);
+      f.r = r; assert.equal(r.commissionAlloc, 9000);
+      assert.equal((await drv(A)).pendingDebt, 0, "la deuda queda saldada");
+      assert.deepEqual(await bal(), before, "no cambia caja ni banco");
+      const sy1 = await days.getDaySummary(yesterday);
+      assert.deepEqual([sy1.finalTotal, sy1.ingresos, sy1.egresos], [sy0.finalTotal, sy0.ingresos, sy0.egresos], "el día cerrado queda igual");
+      assert.deepEqual((await p.shiftClose.findFirstOrThrow({ where: { date: yesterday } })).corrections, [], "no es una corrección de dinero");
+      const dp = await p.driverPayment.findFirstOrThrow({ where: { bankTransactionId: tx.id } });
+      assert.equal(toBogotaDateStr(dp.date), today, "el pago de comisión se fecha hoy (día operativo)");
+      const st = await days.getDaySummary(today); assert.equal(st.initialTotal + st.ingresos - st.egresos, st.finalTotal);
+      assert.equal((await api(`/bank-transactions/${tx.id}/apply-to-driver`, "POST", { driverId: A.id }, oper)).status, 400, "no se descuenta dos veces");
+      // Eliminarlo después (por solicitud, día cerrado) devuelve la deuda y quita el dinero del banco.
+      const req = await ok("/edit-requests", "POST", { entityType: "BankTransaction", entityId: tx.id, entityLabel: "x", changes: {}, reason: "x", requestType: "delete" });
+      await ok(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin);
+      assert.equal((await drv(A)).pendingDebt, 9000, "la deuda vuelve");
+      assert.equal(await p.driverPayment.count(), 0);
+      assert.deepEqual(await bal(), { cash: before.cash, bank: before.bank - 9000 });
+    });
+    await check("CONC-HORA", "Un cobro de cliente por hora no se descuenta de la deuda de un domiciliario", async () => {
+      await order(A, 30000);
+      const tx = await p.bankTransaction.create({ data: { type: "ingreso", medium: "bank", amount: 9000, description: "Cobro cliente por hora — X", hourlyShiftId: "turno-x", noCounterpart: true, date: new Date() } });
+      const r = await api(`/bank-transactions/${tx.id}/apply-to-driver`, "POST", { driverId: A.id }, oper);
+      assert.equal(r.status, 400); assert.match(JSON.stringify(r.body), /cliente por hora/);
+      assert.equal((await drv(A)).pendingDebt, 9000);
+      assert.equal(await p.driverPayment.count(), 0);
+    });
+    await check("CONC-PAR", "Enlazar como contraparte una salida de un día cerrado con el ingreso de hoy", async f => {
+      await ok("/bank-transactions", "POST", { type: "egreso", medium: "bank", amount: 20000, description: "Préstamo a Pedro", date: yesterday }, admin);
+      const out = await p.bankTransaction.findFirstOrThrow(); await closeDay(yesterday);
+      const inn = await ok("/bank-transactions", "POST", { type: "ingreso", medium: "bank", amount: 20000, description: "Pedro devolvió" }, oper);
+      const before = await bal();
+      const cands = await ok(`/bank-transactions/${out.id}/pair-candidates`); f.cands = cands.length;
+      assert.deepEqual(cands.map((c: any) => c.id), [inn.id]);
+      await ok(`/bank-transactions/${out.id}/pair`, "POST", { withId: inn.id }, oper);
+      const [a, b] = await Promise.all([p.bankTransaction.findUniqueOrThrow({ where: { id: out.id } }), p.bankTransaction.findUniqueOrThrow({ where: { id: inn.id } })]);
+      assert.ok(a.pairId && a.pairId === b.pairId, "quedan enlazados");
+      assert.deepEqual(await bal(), before, "enlazar no mueve dinero");
+      assert.deepEqual((await p.shiftClose.findFirstOrThrow({ where: { date: yesterday } })).corrections, []);
+      const listY = await ok(`/bank-transactions?from=${yesterday}&to=${yesterday}`);
+      assert.equal(toBogotaDateStr(new Date(listY[0].pairPartner.date)), today, "la lista del día cerrado muestra su contraparte de hoy");
+      assert.equal((await api(`/bank-transactions/${out.id}/pair`, "POST", { withId: inn.id }, oper)).status, 409, "no se enlaza dos veces");
+      assert.equal((await api(`/bank-transactions/${inn.id}/apply-to-driver`, "POST", { driverId: A.id }, oper)).status, 400, "con contraparte no es pago de deuda");
+    });
+    await check("CONC-PAR-REGLAS", "Enlazar exige signo opuesto y mismo importe", async () => {
+      const a = await ok("/bank-transactions", "POST", { type: "egreso", medium: "bank", amount: 20000, description: "a" }, oper);
+      const b = await ok("/bank-transactions", "POST", { type: "ingreso", medium: "bank", amount: 19999, description: "b" }, oper);
+      const c = await ok("/bank-transactions", "POST", { type: "egreso", medium: "cash", amount: 20000, description: "c" }, oper);
+      assert.equal((await api(`/bank-transactions/${a.id}/pair`, "POST", { withId: b.id })).status, 400, "importe distinto");
+      assert.equal((await api(`/bank-transactions/${a.id}/pair`, "POST", { withId: c.id })).status, 400, "mismo signo");
+      assert.equal((await api(`/bank-transactions/${a.id}/pair`, "POST", { withId: a.id })).status, 400, "consigo mismo");
+      assert.equal(await p.bankTransaction.count({ where: { pairId: { not: null } } }), 0);
+    });
+    await check("CONC-CONTRA-HOY", "Registrar la contraparte de un movimiento de un día cerrado: cuenta hoy", async () => {
+      await ok("/bank-transactions", "POST", { type: "egreso", medium: "cash", amount: 15000, description: "Salió", date: yesterday }, admin);
+      const out = await p.bankTransaction.findFirstOrThrow(); await closeDay(yesterday); const before = await bal();
+      const inn = await ok("/bank-transactions", "POST", { type: "ingreso", medium: "cash", amount: 15000, description: "Volvió", pairWith: out.id }, oper);
+      assert.equal(toBogotaDateStr(new Date(inn.date)), today);
+      assert.deepEqual(await bal(), { cash: before.cash + 15000, bank: before.bank }, "es plata que entra hoy");
+      assert.deepEqual((await p.shiftClose.findFirstOrThrow({ where: { date: yesterday } })).corrections, []);
+    });
+    await check("CONC-MES", "Un mes cerrado no se concilia (ni deuda ni contraparte)", async () => {
+      await order(A, 30000);
+      const ing = await p.bankTransaction.create({ data: { type: "ingreso", medium: "bank", amount: 9000, description: "viejo", noCounterpart: true, date: new Date(Date.now() - 3600_000) } });
+      const eg = await p.bankTransaction.create({ data: { type: "egreso", medium: "bank", amount: 5000, description: "viejo e", date: new Date(Date.now() - 3600_000) } });
+      const ii = await p.bankTransaction.create({ data: { type: "ingreso", medium: "bank", amount: 5000, description: "viejo i", date: new Date(Date.now() - 3600_000) } });
+      await p.monthlyClose.create({ data: { month: prevMonthLast.slice(0, 7), totalOrders: 0, totalValue: 0, companyTotal: 0, basesGiven: 0, basesPaid: 0, basesPending: 0, conversions: {}, snapshot: {}, closedAt: new Date(Date.now() - 1000) } });
+      assert.equal((await api(`/bank-transactions/${ing.id}/apply-to-driver`, "POST", { driverId: A.id })).status, 409);
+      assert.equal((await api(`/bank-transactions/${eg.id}/pair`, "POST", { withId: ii.id })).status, 409);
+      assert.equal((await drv(A)).pendingDebt, 9000);
+    });
+    // ── Abonos repartidos (25-oct-2026): un abono es UNA fila por el valor cobrado y se revierte completo.
+    const hourlySvc = await import(`${SRC}/services/hourly-client.service.ts`);
+    const clientSvc = await import(`${SRC}/services/client.service.ts`);
+    const unified = await import(`${SRC}/services/unified-movements.service.ts`);
+    await check("ABONO-HORA", "Abono de cliente por hora repartido en 2 turnos: una fila de 30.000 y se revierte completo", async f => {
+      const hc = await hourlySvc.createHourlyClient({ name: "Cliente hora", driverHourValue: 12000, companyHourValue: 8000 });
+      for (const [s, e] of [["08:00", "09:00"], ["10:00", "11:00"]]) await hourlySvc.registerShift(hc.id, { driverId: A.id, startTime: s, endTime: e, medium: "cash" });
+      assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 40000, "2 turnos de 20.000");
+      const before = await bal();
+      await ok(`/hourly-clients/${hc.id}/pay`, "POST", { amount: 30000, medium: "bank" });
+      const rows = await p.bankTransaction.findMany({ where: { type: "ingreso", hourlyShiftId: { not: null } }, orderBy: { amount: "desc" } });
+      f.rows = rows.map(r => r.amount);
+      assert.deepEqual(rows.map(r => r.amount), [20000, 10000], "FIFO por turno");
+      assert.ok(rows[0].paymentGroupId && rows[0].paymentGroupId === rows[1].paymentGroupId, "mismo abono");
+      assert.deepEqual(await bal(), { cash: before.cash, bank: before.bank + 30000 });
+      const movs = (await unified.getUnifiedMovements({ from: today, to: today })).filter(m => m.entityType === "BankTransaction" && m.type === "ingreso");
+      f.movs = movs.map(m => [m.amount, m.description]);
+      assert.equal(movs.length, 1, "una sola fila"); assert.equal(movs[0].amount, 30000);
+      const req = await ok("/edit-requests", "POST", { entityType: "BankTransaction", entityId: movs[0].entityId, entityLabel: "Abono", changes: {}, reason: "error", requestType: "delete" });
+      assert.match(req.entityLabel, /revierte el abono completo/);
+      await ok(`/edit-requests/${req.id}/review`, "POST", { action: "approved" }, admin);
+      assert.equal(await p.bankTransaction.count({ where: { type: "ingreso" } }), 0);
+      assert.equal((await p.hourlyClient.findUniqueOrThrow({ where: { id: hc.id } })).pendingDebt, 40000, "la deuda vuelve completa");
+      assert.deepEqual((await p.hourlyShift.findMany()).map(s => s.paidAmount), [0, 0]);
+      assert.deepEqual(await bal(), before);
+    });
+    await check("ABONO-CLI", "Abono de cliente normal repartido en 2 deudas: una fila y se revierte completo", async f => {
+      const c = await clientSvc.createClient({ name: "Cliente normal" });
+      await clientSvc.addDebt(c.id, "Deuda 1", 20000); await clientSvc.addDebt(c.id, "Deuda 2", 20000);
+      const before = await bal();
+      await clientSvc.registerClientPayment(c.id, 30000, false, "cash");
+      const pays = await p.clientDebtPayment.findMany(); f.pays = pays.map(x => x.paidAmount);
+      assert.equal(pays.length, 2); assert.ok(pays[0].paymentGroupId && pays[0].paymentGroupId === pays[1].paymentGroupId);
+      const movs = (await unified.getUnifiedMovements({ from: today, to: today })).filter(m => m.entityType === "ClientDebtPayment");
+      assert.deepEqual(movs.map(m => m.amount), [30000], "una sola fila por el valor abonado");
+      assert.deepEqual(await bal(), { cash: before.cash + 30000, bank: before.bank });
+      await clientSvc.reverseClientPayment(movs[0].entityId);
+      assert.equal(await p.clientDebtPayment.count(), 0);
+      assert.equal((await p.client.findUniqueOrThrow({ where: { id: c.id } })).pendingDebt, 40000);
+      assert.deepEqual(await bal(), before);
+    });
+    await check("MIX-DEUDA", "Un ingreso mixto no se descuenta a medias de una deuda", async () => {
+      await order(A, 30000);
+      const r = await ok("/bank-transactions", "POST", { type: "ingreso", cashAmount: 4000, bankAmount: 5000, description: "Mixto", noCounterpart: true }, oper);
+      const id = r.parts[0].id;
+      assert.equal((await api(`/bank-transactions/${id}/apply-to-driver`, "POST", { driverId: A.id })).status, 400);
+      assert.equal((await drv(A)).pendingDebt, 9000);
     });
     await check("D7-ADD", "Agregar por solicitud un egreso olvidado a un día cerrado; el mes abierto lo refleja", async f => {
       await closeDay(yesterday); const before = await bal();

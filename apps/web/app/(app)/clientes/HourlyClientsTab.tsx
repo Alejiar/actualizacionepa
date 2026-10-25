@@ -190,7 +190,7 @@ export function HourlyClientsTab() {
       {clients.length > 0 && (
         <div className="grid grid-cols-3 gap-3">
           <SummaryCard icon="🏢" label="Clientes" value={String(clients.length)} />
-          <SummaryCard icon="💰" label="Ganancia empresa" value={formatCOP(totalCompany)} good />
+          <SummaryCard icon="💰" label="Ganancia empresa por cobrar" value={formatCOP(totalCompany)} good />
           <SummaryCard icon="💸" label="Deuda clientes" value={formatCOP(totalDebt)} warn={totalDebt > 0} />
         </div>
       )}
@@ -294,8 +294,8 @@ export function HourlyClientsTab() {
                     {/* Deuda del cliente */}
                     <div className="rounded-2xl border border-border/60 p-4 space-y-3">
                       <div className="grid grid-cols-3 gap-2 text-center">
-                        <MiniStat label="Valor domiciliarios" value={formatCOP(c.driverOutstanding)} />
-                        <MiniStat label="Ganancia empresa" value={formatCOP(c.companyOutstanding)} good />
+                        <MiniStat label="Parte domiciliarios (por cobrar)" value={formatCOP(c.driverOutstanding)} />
+                        <MiniStat label="Ganancia empresa (por cobrar)" value={formatCOP(c.companyOutstanding)} good />
                         <MiniStat label="Deuda total cliente" value={formatCOP(c.pendingDebt)} warn />
                       </div>
                       {c.pendingDebt > 0 ? (

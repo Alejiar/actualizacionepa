@@ -72,15 +72,18 @@ const st=async(id:string)=>{const d=await p.driver.findUniqueOrThrow({where:{id}
   await assert.rejects(req('BaseTransaction','none',{amount:{old:'1000',new:'-1'}}));
   await assert.rejects(req('Unknown','none',{}));
  });
- await test('Abono mixto: conserva medio, no duplica caja y revierte una parte',async()=>{
+ // 25-oct-2026: un abono (aunque sea mixto) es UNO solo (paymentGroupId): se muestra en una línea y
+ // revertirlo lo revierte completo. Antes se revertía solo la parte elegida.
+ await test('Abono mixto: conserva medio, no duplica caja y se revierte completo',async()=>{
   const c=await p.client.create({data:{name:'Mixto'}});const debt=await cls.addDebt(c.id,'deuda',30000);
   const before=await dashboard.getExpectedBalancesForDate(todayBogota());
   await cls.registerClientPayment(c.id,15000,false,'cash',{cashAmount:10000,bankAmount:5000});
   const payments=await p.clientDebtPayment.findMany({where:{debtId:debt.id}});assert.equal(payments.length,2);
   const after=await dashboard.getExpectedBalancesForDate(todayBogota());assert.equal(after.cash-before.cash,10000);assert.equal(after.bank-before.bank,5000);
   await cls.reverseClientPayment(payments.find((x:any)=>x.paidBank>0)!.id);
-  const final=await dashboard.getExpectedBalancesForDate(todayBogota());assert.equal(final.cash-before.cash,10000);assert.equal(final.bank-before.bank,0);
-  assert.equal((await p.client.findUniqueOrThrow({where:{id:c.id}})).pendingDebt,20000);
+  const final=await dashboard.getExpectedBalancesForDate(todayBogota());assert.equal(final.cash-before.cash,0);assert.equal(final.bank-before.bank,0);
+  assert.equal(await p.clientDebtPayment.count({where:{debtId:debt.id}}),0);
+  assert.equal((await p.client.findUniqueOrThrow({where:{id:c.id}})).pendingDebt,30000);
  });
  await test('Dos abonos de cliente simultáneos conservan ambas cantidades',async()=>{
   const c=await p.client.create({data:{name:'Concurrente'}});const debt=await cls.addDebt(c.id,'deuda',30000);

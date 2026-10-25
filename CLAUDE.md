@@ -129,6 +129,23 @@ interna, marcados con notas especiales (`BANK_LINKED_PAYMENT_NOTE`,
   revés) y un movimiento con contraparte es plata de paso, no un pago del
   domiciliario. El botón "Descontar de deuda" en `banco/page.tsx` aplica el
   mismo filtro, pero **la validación que manda es la del backend**.
+- **Conciliación (decisión del dueño, 25-oct-2026):** descontar de deuda (`applyBankToDriver`) y
+  cuadrar contrapartes (`pairWith` al crear, o `POST /bank-transactions/:id/pair` para enlazar dos
+  movimientos YA registrados) se permiten aunque el día del movimiento tenga Cierre: no mueven dinero
+  ya contado. Solo los bloquea un MES cerrado (`assertReconcilable`). Si el día está cerrado, el
+  `DriverPayment`/base bank-linked se fecha en el día operativo (`moneyNow`), nunca en el día cerrado,
+  y no se registra corrección D7 (no hay delta de dinero). Un movimiento de cliente por hora
+  (`hourlyShiftId`) nunca se descuenta de un domiciliario. En `banco/page.tsx`, `isConsolidated`
+  define qué es pendiente; la lista trae `pairPartner` cuando la contraparte está en otro día.
+  Regresiones `CONC-*` en `tests/claude-f14-d7.ts`.
+- **Abonos repartidos (25-oct-2026):** un abono de cliente (normal: `ClientDebtPayment` por deuda y
+  medio; por hora: `BankTransaction` por turno) se reparte FIFO en varias filas que comparten
+  `paymentGroupId` (migración `20261025190000_payment_group`, que agrupó los cobros por hora previos).
+  Banco (`sd-api.getUnifiedBankMovements`) y Movimientos (`unified-movements.service`) los muestran
+  como UNA fila por el valor cobrado, y eliminar/revertir cualquiera de sus filas revierte el abono
+  COMPLETO (`deleteHourlyBankTx`, `reverseClientPayment`). Antes se veían los pedazos por turno
+  (p. ej. 59.664 + 27.336 por un abono de 87.000). Un ingreso mixto (`groupId`) no se descuenta de
+  una deuda (aplicaba solo una mitad). Regresiones `ABONO-HORA`, `ABONO-CLI`, `MIX-DEUDA`.
 - Las FK `BaseTransaction.bankTransactionId` y `DriverPayment.bankTransactionId`
   son `onDelete: Cascade`, **no `SetNull`**. Con `SetNull`, borrar el
   `BankTransaction` dejaba esos registros vivos y sin enlace — pagos fantasma

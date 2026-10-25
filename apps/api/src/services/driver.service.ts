@@ -1,9 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import { prisma, moneyTransaction } from "../lib/prisma";
-import { assertOpenInstant, moneyNow } from "../lib/period-guard";
+import { assertOpenInstant, assertReconcilable, isDayClosed, moneyNow } from "../lib/period-guard";
 import { assertMoney } from "../lib/money-validation";
 import { badRequest, notFound } from "../lib/errors";
-import { bogotaDayRange, todayBogota } from "../lib/date-range";
+import { bogotaDayRange, toBogotaDateStr, todayBogota } from "../lib/date-range";
 import { BANK_LINKED_PAYMENT_NOTE, bankLinkedBaseNote } from "../lib/balance-markers";
 import { basePendingByDriver, getBaseLedger } from "../lib/base-balance";
 
@@ -289,9 +289,26 @@ export async function applyBankToDriver(
     prisma.driver.findUnique({ where: { id: driverId } }),
   ]);
   if (!bankTx) throw notFound("Movimiento bancario no encontrado");
-  await assertOpenInstant(bankTx.date, "La aplicación del ingreso a deuda");
   if (!driver) throw notFound("Domiciliario no encontrado");
-  await assertOpenInstant(bankTx.date, "La aplicación del ingreso a deuda", driver.branchId);
+  // Conciliación (25-oct-2026): el ingreso ya se contó en su día; descontarlo de la deuda no mueve
+  // caja ni banco, así que un día con Cierre no lo impide (solo un mes cerrado). Si su día ya está
+  // cerrado, la contabilidad interna (pago de comisión/base, excluida del esperado) se fecha en el
+  // día operativo: ahí es cuando bajó la deuda, y el día cerrado queda intacto.
+  await assertReconcilable(bankTx.date, "La aplicación del ingreso a deuda", driver.branchId);
+  const closedDay = await isDayClosed(bankTx.date);
+  const bookedAt = closedDay ? await moneyNow() : bankTx.date;
+  await assertOpenInstant(bookedAt, "La aplicación del ingreso a deuda", driver.branchId);
+
+  // Un cobro o pago de cliente por hora ya está consolidado con su turno: no es plata de
+  // ningún domiciliario y descontarlo de una deuda contaría el mismo dinero dos veces.
+  if (bankTx.hourlyShiftId) {
+    throw badRequest("Este movimiento es de un cliente por hora (ya está consolidado con su turno); no se descuenta de la deuda de un domiciliario.");
+  }
+  // Un ingreso mixto son dos filas (efectivo + transferencia): aplicar una sola descontaba solo esa
+  // mitad aunque la pantalla mostrara el total. Se rechaza; el pago va por "Registrar pago" dividido.
+  if (bankTx.groupId) {
+    throw badRequest("Este ingreso es mixto (efectivo + transferencia). Para un pago de domiciliario dividido usa «Registrar pago» en Deudas.");
+  }
 
   // Una deuda solo baja cuando ENTRA plata. Una salida es plata que la empresa
   // entregó: descontarla de una deuda es contabilidad al revés. Esto ocurrió de
@@ -335,7 +352,7 @@ export async function applyBankToDriver(
           deviceId: actor?.deviceId ?? null,
           deviceName: actor?.deviceName ?? null,
           bankTransactionId: bankTxId,
-          date: bankTx.date,
+          date: bookedAt,
         },
       });
     }
@@ -352,7 +369,7 @@ export async function applyBankToDriver(
           deviceId: actor?.deviceId ?? null,
           deviceName: actor?.deviceName ?? null,
           bankTransactionId: bankTxId,
-          date: bankTx.date,
+          date: bookedAt,
         },
       });
       await applyDebtDelta(tx, driverId, -commissionAlloc);
@@ -373,7 +390,7 @@ export async function applyBankToDriver(
         // eliminarlo: comisión = debtApplied − bases enlazadas (ver revertDriverApplication).
         noCounterpart: true,
         debtApplied: amount,
-        description: `${bankTx.description} · Aplicado a ${driver.name}: ${partes.join(" + ")}`,
+        description: `${bankTx.description} · Aplicado a ${driver.name}: ${partes.join(" + ")}${closedDay ? ` (el ${toBogotaDateStr(bookedAt)})` : ""}`,
       },
     });
   });

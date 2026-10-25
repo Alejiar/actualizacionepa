@@ -214,6 +214,8 @@ apiRouter.get("/bank-transactions", asyncHandler(bankTx.list));
 apiRouter.get("/bank-transactions/summary", asyncHandler(bankTx.summary));
 apiRouter.post("/bank-transactions", asyncHandler(bankTx.create));
 apiRouter.post("/bank-transactions/:id/apply-to-driver", asyncHandler(bankTx.applyToDriver));
+apiRouter.get("/bank-transactions/:id/pair-candidates", asyncHandler(bankTx.pairCandidates));
+apiRouter.post("/bank-transactions/:id/pair", asyncHandler(bankTx.pair));
 apiRouter.delete("/bank-transactions/:id", requireAdmin, asyncHandler(bankTx.remove));
 
 // ─── Cierres de turno ─────────────────────────────────────────────────────────

@@ -57,6 +57,29 @@ export async function assertOpenPeriod(dateStr: string, effectiveAt: Date, label
   }
 }
 
+/**
+ * Conciliación (decisión del dueño, 25-oct-2026): enlazar una contraparte o descontar de una deuda
+ * un movimiento que YA se contó no mueve dinero (no cambia ningún esperado ni el conteo de su
+ * Cierre), así que un día con Cierre NO lo bloquea. Solo lo bloquea un MES cerrado: su snapshot es
+ * definitivo. Misma regla de mes que assertOpenPeriod, sin la regla del día.
+ */
+export async function assertReconcilable(at: Date, label = "La conciliación", branchId?: string | null) {
+  if (!Number.isFinite(at.getTime())) throw badRequest(`${label}: fecha inválida.`);
+  const lastClose = await prisma.monthlyClose.findFirst({ where: { branchId: null }, orderBy: { closedAt: "desc" }, select: { closedAt: true, month: true } });
+  if (lastClose && at.getTime() <= lastClose.closedAt.getTime()) {
+    throw conflict(`${label}: el movimiento es anterior al cierre de ${lastClose.month}. Un mes cerrado no se modifica.`);
+  }
+  if (branchId) {
+    const branchClose = await prisma.monthlyClose.findFirst({ where: { branchId, month: { gte: toBogotaDateStr(at).slice(0, 7) } }, select: { month: true } });
+    if (branchClose) throw conflict(`${label}: el movimiento pertenece a un mes cerrado de la sucursal (${branchClose.month}).`);
+  }
+}
+
+/** ¿El día de este instante ya tiene Cierre? */
+export async function isDayClosed(at: Date): Promise<boolean> {
+  return !!(await prisma.shiftClose.findUnique({ where: { date_shift: { date: toBogotaDateStr(at), shift: "close" } }, select: { id: true } }));
+}
+
 /** Valida el calendario antes de convertirlo: Date normaliza, por ejemplo, el 31 de febrero. */
 export function assertCalendarDate(value: unknown, label = "El registro"): asserts value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {

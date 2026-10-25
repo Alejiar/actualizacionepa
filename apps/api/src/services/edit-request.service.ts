@@ -131,7 +131,11 @@ export async function createRequest(data: {
   // "Salida banco · $20.000" y el banco bajaba también por el cobro. Se avisa en la solicitud.
   let entityLabel = data.entityLabel;
   if (requestType === "delete" && data.entityType === "BankTransaction") {
-    const tx = await prisma.bankTransaction.findUnique({ where: { id: data.entityId }, select: { type: true, hourlyShiftId: true } });
+    const tx = await prisma.bankTransaction.findUnique({ where: { id: data.entityId }, select: { type: true, hourlyShiftId: true, paymentGroupId: true } });
+    if (tx?.hourlyShiftId && tx.type === "ingreso" && tx.paymentGroupId) {
+      const abono = await prisma.bankTransaction.aggregate({ where: { paymentGroupId: tx.paymentGroupId }, _sum: { amount: true }, _count: true });
+      if (abono._count > 1) entityLabel += ` — revierte el abono completo ($${(abono._sum.amount ?? 0).toLocaleString("es-CO")}, repartido en ${abono._count} turnos)`;
+    }
     if (tx?.hourlyShiftId && tx.type === "egreso") {
       const cobros = await prisma.bankTransaction.aggregate({ where: { hourlyShiftId: tx.hourlyShiftId, type: "ingreso" }, _sum: { amount: true } });
       const cobrado = cobros._sum.amount ?? 0;

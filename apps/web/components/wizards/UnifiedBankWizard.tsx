@@ -187,7 +187,7 @@ export function UnifiedBankWizard({ open, onOpenChange, onDone, prefill }: Props
             className="w-full glass-strong rounded-2xl px-5 py-4 text-base outline-none focus:ring-2 focus:ring-primary/40" />
           {pairWith ? (
             <div className="rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3 text-xs text-muted-foreground">
-              📅 Esta contraparte se registrará en la <strong className="text-foreground">misma fecha del movimiento original</strong> para que el par cuadre en su día (no en la fecha de hoy).
+              📅 Esta contraparte se registrará en la <strong className="text-foreground">misma fecha del movimiento original</strong> para que el par cuadre en su día. Si ese día ya tiene Cierre, se registra <strong className="text-foreground">hoy</strong> (es plata que se mueve hoy) y el Cierre de ese día no cambia. Si la contraparte ya está registrada, usa «Enlazar con uno ya registrado» en vez de registrarla otra vez.
             </div>
           ) : (
             <div>
