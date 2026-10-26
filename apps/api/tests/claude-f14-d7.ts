@@ -335,6 +335,14 @@ async function main() {
       assert.equal((await drv(A)).pendingDebt, 9000);
       assert.equal(await p.driverPayment.count(), 0);
     });
+    await check("CONC-CON", "Un ingreso registrado «con contraparte» (aún sin pareja) no se descuenta de una deuda", async () => {
+      await order(A, 30000);
+      const inc = await ok("/bank-transactions", "POST", { type: "ingreso", medium: "bank", amount: 9000, description: "Con contraparte" }, oper);
+      const r = await api(`/bank-transactions/${inc.id}/apply-to-driver`, "POST", { driverId: A.id }, oper);
+      assert.equal(r.status, 400); assert.match(JSON.stringify(r.body), /sin contraparte/);
+      assert.equal((await drv(A)).pendingDebt, 9000);
+      assert.equal(await p.driverPayment.count(), 0);
+    });
     await check("CONC-PAR", "Enlazar como contraparte una salida de un día cerrado con el ingreso de hoy", async f => {
       await ok("/bank-transactions", "POST", { type: "egreso", medium: "bank", amount: 20000, description: "Préstamo a Pedro", date: yesterday }, admin);
       const out = await p.bankTransaction.findFirstOrThrow(); await closeDay(yesterday);

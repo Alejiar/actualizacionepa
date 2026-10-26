@@ -329,6 +329,12 @@ export async function applyBankToDriver(
   if (bankTx.debtApplied !== 0) {
     throw badRequest("Este movimiento ya fue descontado de la deuda de un domiciliario.");
   }
+  // Decisión del dueño (25-oct-2026): SOLO un ingreso registrado "sin contraparte" se descuenta de
+  // una deuda. Uno registrado "con contraparte" espera su movimiento espejo (plata de paso), aunque
+  // todavía no lo tenga; descontarlo lo convertía en pago y luego también podía cuadrarse.
+  if (!bankTx.noCounterpart) {
+    throw badRequest("Solo un ingreso registrado «sin contraparte» se descuenta de una deuda. Este se registró «con contraparte»: cuádralo con su movimiento espejo.");
+  }
 
   const amount = bankTx.amount;
   const medium = (bankTx.medium ?? "bank") as "cash" | "bank";

@@ -225,10 +225,10 @@ export default function BancoPage() {
             const partner = m.pairId ? m.pairPartner : undefined;
             const closed = isConsolidated(m);
             const red = (m.type === "ingreso" || m.type === "egreso") && !closed;
-            // Botón amarillo: todo INGRESO del banco que aún no se aplicó a un domiciliario ni tiene
-            // contraparte, aunque esté marcado "sin contraparte". Nunca en movimientos de clientes
-            // (cobros/pagos por hora): ya están consolidados con su turno.
-            const canDiscount = m.source === "bank" && m.type === "ingreso" && !hasDriver && !isHourly && !m.pairId && !isMixed;
+            // Botón amarillo: SOLO un INGRESO registrado "sin contraparte" que aún no se aplicó a un
+            // domiciliario (decisión del dueño, 25-oct-2026). Uno "con contraparte" espera su espejo.
+            // Nunca en movimientos de clientes (cobros/pagos por hora): ya están consolidados.
+            const canDiscount = m.source === "bank" && m.type === "ingreso" && m.noCounterpart === true && !hasDriver && !isHourly && !m.pairId && !isMixed;
             const cardClass = red
               ? "border-2 border-red-500 bg-red-500/10"
               : closed
